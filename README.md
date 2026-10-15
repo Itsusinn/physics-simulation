@@ -18,4 +18,6 @@ trunk serve --release
 
 Open <http://127.0.0.1:8080/>. Use `trunk build --release --locked` to generate static files in `dist/`.
 
+Release builds use WebGPU-only dependencies and wasm-opt for size optimization. Trunk automatically downloads the pinned Binaryen 133 tool.
+
 See [AGENTS.md](AGENTS.md) for architecture, numerical limitations, testing, and deployment details.

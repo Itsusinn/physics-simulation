@@ -43,20 +43,30 @@ jobs:
         run: |
           cargo fmt --check
           cargo clippy --locked --target wasm32-unknown-unknown -- -D warnings
-      - name: Install Trunk
+      - name: Install Trunk and Binaryen
         run: bash scripts/install-trunk.sh
       - name: Build production bundle
         run: |
           trunk build --release --locked
           python3 - <<'PY'
-          import json, pathlib, subprocess
+          import gzip, json, os, pathlib, subprocess
           root = pathlib.Path('dist')
           assert (root / 'index.html').is_file()
           assert list(root.glob('*.wasm')), 'Missing WASM bundle'
           assert list(root.glob('*.js')), 'Missing JavaScript loader'
-          assert 'live_reload' not in (root / 'index.html').read_text()
+          assert 'live_reload' not in (root / 'index.html').read_text(encoding='utf-8')
           sha = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
-          (root / 'version.json').write_text(json.dumps({'repository': 'Itsusinn/three-body', 'commit': sha}) + '\n')
+          (root / 'version.json').write_text(json.dumps({'repository': 'Itsusinn/three-body', 'commit': sha}) + '\n', encoding='utf-8')
+          sizes = []
+          for wasm in root.glob('*.wasm'):
+              data = wasm.read_bytes()
+              sizes.append({'file': wasm.name, 'bytes': len(data), 'gzip_bytes': len(gzip.compress(data, compresslevel=9, mtime=0))})
+          (root / 'size-report.json').write_text(json.dumps(sizes, indent=2) + '\n', encoding='utf-8')
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as summary:
+              summary.write('## WASM size\n\n| File | Raw bytes | gzip-9 bytes (estimate) |\n| --- | ---: | ---: |\n')
+              for item in sizes:
+                  summary.write(f"| {item['file']} | {item['bytes']:,} | {item['gzip_bytes']:,} |\n")
+          assert sum(item['bytes'] for item in sizes) <= 5_000_000, 'WASM exceeds the 5 MB size budget'
           PY
       - uses: actions/upload-artifact@v4
         with:

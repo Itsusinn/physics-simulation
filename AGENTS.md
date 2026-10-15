@@ -27,13 +27,29 @@ trunk serve --release
 # 或 trunk build --release
 ```
 
-输出位于 `dist/`。Trunk 负责安装与 Cargo.lock 匹配的 wasm-bindgen 工具。未启用 wasm-opt。
+输出位于 `dist/`。Trunk 负责安装与 Cargo.lock 匹配的 wasm-bindgen 工具，以及 `Trunk.toml` 固定的 Binaryen 133。用户已确认引入 wasm-opt；release 构建使用 `-Oz`，清理符号名称和 producers 信息。开发构建不执行 wasm-opt。
+
+WASM 目标使用 eframe 的 `wgpu_no_default_features`，只启用 wgpu 的 WebGPU 后端，避免编入不使用的 WebGL、wgpu-core 和 Naga 着色器转换代码。原生目标继续启用原生后端，用于 GPU 集成测试。保留 egui 默认字体和全部界面功能。
+
+release 使用 `opt-level = "s"`、完整 LTO 和单个 codegen unit；本项目实测 `s` 比 `z` 更小。不要在 Cargo 中提前设置 `strip = "symbols"`：它会移除 wasm-opt 自动识别指令集需要的 `target_features` 元数据。符号清理由最后的 wasm-opt 阶段完成。优化构建耗时更长，生产产物的函数名称被删除，调试时使用开发构建。
+
+2026-10-15 在 Windows、Rust 1.98.1、Trunk 0.21.14 下的 release 实测（字节；gzip-9 使用相同参数估算）：
+
+| 配置 | WASM 原始大小 | gzip-9 |
+| --- | ---: | ---: |
+| 原始配置：WebGL 特性、opt-level 2、thin LTO、无 wasm-opt | 10,458,286 | 3,297,478 |
+| 仅移除 WASM 的 WebGL 依赖 | 6,187,380 | 2,134,054 |
+| 最终配置：WebGPU-only、opt-level s、fat LTO、wasm-opt | 3,963,923 | 1,774,508 |
+
+最终原始大小减少 62.1%，gzip-9 估算减少 46.2%。不同平台、工具链和后续代码修改可能改变体积。
 
 ## 持续集成
 
 源码仓库：<https://github.com/Itsusinn/three-body>。
 
 推送到 `main` 或创建 pull request 后，GitHub Actions 使用 `rust-toolchain.toml` 固定的 Rust 1.98.1 和经过 SHA-256 校验的 Trunk 0.21.14，执行格式检查、WASM Clippy 检查和锁定依赖的 release 构建。生成的 `three-body-web` artifact 包含完整 HTML / JS / WASM 和记录源码提交的 `version.json`，保留 14 天。工作流也支持手动运行和由网站工作流调用。
+
+CI 同时校验 Binaryen 133 的下载摘要，并在 Actions summary 与产物 `size-report.json` 中记录 WASM 原始字节数和 gzip-9 估算。WASM 总体积上限为 5,000,000 字节；超过时构建失败。gzip 数值用于对比，不代表服务器实际传输大小，也不会生成用于部署的 `.gz` 文件。
 
 CI 不运行需要 GPU adapter 的原生物理测试；这些测试在本地执行。应用使用相对资源路径，可部署在 `/apps/three-body/` 子目录。
 

@@ -4,6 +4,8 @@ mod app;
 mod gpu;
 #[cfg(any(target_arch = "wasm32", test))]
 mod model;
+#[cfg(any(target_arch = "wasm32", test))]
+mod simulation;
 
 #[cfg(target_arch = "wasm32")]
 fn main() {

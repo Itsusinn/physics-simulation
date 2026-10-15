@@ -1,18 +1,18 @@
 pub const HISTORY: u32 = 4096;
-pub const STATE_BYTES: u64 = 144;
+pub const STATE_BYTES: u64 = 64;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Body {
-    pub position: [f32; 2],
-    pub velocity: [f32; 2],
-    pub mass: f32,
+    pub position: [f64; 2],
+    pub velocity: [f64; 2],
+    pub mass: f64,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct InitialConditions {
     pub bodies: [Body; 3],
-    pub gravity: f32,
-    pub softening: f32,
+    pub gravity: f64,
+    pub softening: f64,
 }
 
 impl Default for InitialConditions {
@@ -75,37 +75,36 @@ impl InitialConditions {
         Ok(())
     }
 
-    pub fn state_bytes(&self) -> Vec<u8> {
+    /// Only positions and masses cross the f64 -> f32 rendering boundary.
+    pub fn render_bytes(&self, next: u32, count: u32) -> Vec<u8> {
         let mut bytes = Vec::with_capacity(STATE_BYTES as usize);
         for body in self.bodies {
             for value in [
-                body.position[0],
-                body.position[1],
-                body.velocity[0],
-                body.velocity[1],
-                body.mass,
-                0.0,
-                0.0,
+                body.position[0] as f32,
+                body.position[1] as f32,
+                body.mass as f32,
                 0.0,
             ] {
                 bytes.extend_from_slice(&value.to_le_bytes());
             }
         }
-        bytes.resize(STATE_BYTES as usize, 0);
+        for value in [next, count, 0, 0] {
+            bytes.extend_from_slice(&value.to_le_bytes());
+        }
         bytes
     }
 }
 
 #[derive(Clone, Debug, Default)]
 pub struct Snapshot {
-    pub positions: [[f32; 2]; 3],
-    pub time: f32,
-    pub initial_energy: f32,
-    pub energy: f32,
-    pub separation: f32,
-    pub momentum: [f32; 2],
-    pub angular_momentum: f32,
-    pub min_step: f32,
+    pub positions: [[f64; 2]; 3],
+    pub time: f64,
+    pub initial_energy: f64,
+    pub energy: f64,
+    pub separation: f64,
+    pub momentum: [f64; 2],
+    pub angular_momentum: f64,
+    pub min_step: f64,
     pub steps: u32,
     pub flags: u32,
     pub generation: u64,
@@ -114,37 +113,15 @@ pub struct Snapshot {
 }
 
 impl Snapshot {
-    pub fn decode(bytes: &[u8], generation: u64) -> Self {
-        let f = |offset: usize| f32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap());
-        let u = |offset: usize| u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap());
-        Self {
-            positions: std::array::from_fn(|i| [f(i * 32), f(i * 32 + 4)]),
-            time: f(96),
-            initial_energy: f(100),
-            energy: f(104),
-            separation: f(108),
-            momentum: [f(112), f(116)],
-            angular_momentum: f(120),
-            min_step: f(124),
-            steps: u(136),
-            flags: u(140),
-            generation,
-            ready: true,
-            error: None,
-        }
-    }
-
-    pub fn relative_energy_error(&self) -> f32 {
-        (self.energy - self.initial_energy).abs() / self.initial_energy.abs().max(1e-8)
+    pub fn relative_energy_error(&self) -> f64 {
+        (self.energy - self.initial_energy).abs() / self.initial_energy.abs().max(1e-30)
     }
 }
 
 #[derive(Clone)]
 pub struct FrameParams {
-    pub gravity: f32,
-    pub softening: f32,
-    pub max_step: f32,
-    pub duration: f32,
+    pub max_step: f64,
+    pub duration: f64,
     pub center: [f32; 2],
     pub scale: f32,
     pub viewport: [f32; 2],
@@ -152,15 +129,14 @@ pub struct FrameParams {
     pub body_size: f32,
     pub trail_length: u32,
     pub grid: bool,
-    pub adaptive: bool,
+    pub rtol: f64,
+    pub atol: f64,
 }
 
 impl Default for FrameParams {
     fn default() -> Self {
         Self {
-            gravity: 1.0,
-            softening: 0.0,
-            max_step: 0.001,
+            max_step: 0.05,
             duration: 0.0,
             center: [0.0; 2],
             scale: 5.0,
@@ -169,19 +145,16 @@ impl Default for FrameParams {
             body_size: 1.0,
             trail_length: 2048,
             grid: true,
-            adaptive: true,
+            rtol: 1e-11,
+            atol: 1e-13,
         }
     }
 }
 
 impl FrameParams {
     pub fn bytes(&self) -> Vec<u8> {
-        let mut bytes = Vec::with_capacity(64);
+        let mut bytes = Vec::with_capacity(48);
         for value in [
-            self.gravity,
-            self.softening,
-            self.max_step,
-            self.duration,
             self.center[0],
             self.center[1],
             self.scale,
@@ -193,12 +166,7 @@ impl FrameParams {
         ] {
             bytes.extend_from_slice(&value.to_le_bytes());
         }
-        for value in [
-            self.trail_length,
-            u32::from(self.grid),
-            u32::from(self.adaptive),
-            0,
-        ] {
+        for value in [self.trail_length, u32::from(self.grid), 0, 0] {
             bytes.extend_from_slice(&value.to_le_bytes());
         }
         bytes
@@ -223,12 +191,12 @@ mod tests {
                     .bodies
                     .iter()
                     .map(|b| b.mass * b.position[axis])
-                    .sum::<f32>(),
+                    .sum::<f64>(),
                 0.0
             );
         }
-        assert_eq!(initial.state_bytes().len(), STATE_BYTES as usize);
-        assert_eq!(FrameParams::default().bytes().len(), 64);
+        assert_eq!(initial.render_bytes(0, 0).len(), STATE_BYTES as usize);
+        assert_eq!(FrameParams::default().bytes().len(), 48);
     }
 
     #[test]
@@ -238,7 +206,7 @@ mod tests {
         assert!(initial.validate().is_err());
         initial.softening = 0.01;
         assert!(initial.validate().is_ok());
-        initial.bodies[0].velocity[0] = f32::NAN;
+        initial.bodies[0].velocity[0] = f64::NAN;
         assert!(initial.validate().is_err());
     }
 }

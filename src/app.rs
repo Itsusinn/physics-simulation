@@ -6,7 +6,7 @@ use std::{
 use eframe::egui::{self, Color32, FontId, RichText, Stroke, Vec2};
 
 use crate::{
-    gpu::{Gpu, Readback, SimulationCallback},
+    gpu::{Diagnostics, Gpu, SimulationCallback},
     model::{FrameParams, InitialConditions, Snapshot},
 };
 
@@ -22,18 +22,17 @@ pub struct ThreeBodyApp {
     active: InitialConditions,
     draft: InitialConditions,
     params: FrameParams,
-    readback: Arc<Mutex<Readback>>,
+    diagnostics: Arc<Mutex<Diagnostics>>,
     snapshot: Snapshot,
     generation: u64,
-    reset: Option<InitialConditions>,
     running: bool,
     step: bool,
     speed: f32,
     follow: bool,
     show_controls: bool,
     validation_error: Option<String>,
-    energy_history: VecDeque<f32>,
-    last_sample_time: f32,
+    energy_history: VecDeque<f64>,
+    last_sample_time: f64,
     fps: f32,
     view_initialized: bool,
 }
@@ -47,7 +46,7 @@ impl ThreeBodyApp {
             .as_ref()
             .ok_or("WebGPU renderer unavailable")?;
         let gpu = Gpu::new(&render.device, render.target_format);
-        let readback = gpu.readback.clone();
+        let diagnostics = gpu.diagnostics.clone();
         render.renderer.write().callback_resources.insert(gpu);
         let ctx = &cc.egui_ctx;
         ctx.set_theme(egui::Theme::Dark);
@@ -80,10 +79,9 @@ impl ThreeBodyApp {
             active: InitialConditions::default(),
             draft: InitialConditions::default(),
             params: FrameParams::default(),
-            readback,
+            diagnostics,
             snapshot: Snapshot::default(),
             generation: 0,
-            reset: Some(InitialConditions::default()),
             running: false,
             step: false,
             speed: 1.0,
@@ -103,10 +101,7 @@ impl ThreeBodyApp {
             return;
         }
         self.active = initial.clone();
-        self.params.gravity = initial.gravity;
-        self.params.softening = initial.softening;
         self.generation += 1;
-        self.reset = Some(initial);
         self.snapshot = Snapshot::default();
         self.running = false;
         self.step = false;
@@ -116,9 +111,12 @@ impl ThreeBodyApp {
     }
 
     fn read_diagnostics(&mut self) {
-        let latest = self.readback.lock().unwrap().snapshot.clone();
+        let latest = self.diagnostics.lock().unwrap().snapshot.clone();
         if latest.generation != self.generation {
             return;
+        }
+        if latest.time > self.snapshot.time || latest.error.is_some() {
+            self.step = false;
         }
         if latest.error.is_some() || latest.flags & 4 != 0 {
             self.running = false;
@@ -185,9 +183,11 @@ impl ThreeBodyApp {
                     ui.label(RichText::new("Space: pause / run     R: reset").small().color(MUTED));
                     section(ui, "01", "Time & precision");
                     ui.add(egui::Slider::new(&mut self.speed, 0.05..=10.0).logarithmic(true).text("Speed"));
-                    ui.add(egui::Slider::new(&mut self.params.max_step, 0.00001..=0.01).logarithmic(true).max_decimals(5).text("Max dt"));
-                    ui.checkbox(&mut self.params.adaptive, "Adaptive close encounters");
-                    ui.label(RichText::new("Velocity Verlet · f32 · dimensionless units").small().color(MUTED));
+                    ui.add(egui::Slider::new(&mut self.params.max_step, 0.00001..=0.1).logarithmic(true).max_decimals(5).text("Max dt"));
+                    ui.add(egui::Slider::new(&mut self.params.rtol, 1e-13..=1e-6).logarithmic(true).custom_formatter(|v, _| format!("{v:.0e}")).text("Rel. tol"));
+                    ui.add(egui::Slider::new(&mut self.params.atol, 1e-15..=1e-8).logarithmic(true).custom_formatter(|v, _| format!("{v:.0e}")).text("Abs. tol"));
+                    ui.label(RichText::new("Smaller tolerances request smaller local error; they do not guarantee global accuracy.").small().color(MUTED));
+                    ui.label(RichText::new("DOP853 · f64 · adaptive error control").small().color(MUTED));
                     ui.label(RichText::new(format!("Smallest dt  {:.2e}", self.snapshot.min_step)).small().color(MUTED));
 
                     section(ui, "02", "Initial conditions");
@@ -259,8 +259,8 @@ impl ThreeBodyApp {
         let mut hi = [f32::NEG_INFINITY; 2];
         for p in positions {
             for axis in 0..2 {
-                lo[axis] = lo[axis].min(p[axis]);
-                hi[axis] = hi[axis].max(p[axis]);
+                lo[axis] = lo[axis].min(p[axis] as f32);
+                hi[axis] = hi[axis].max(p[axis] as f32);
             }
         }
         for axis in 0..2 {
@@ -282,7 +282,11 @@ impl ThreeBodyApp {
             ui.allocate_exact_size(Vec2::new(ui.available_width(), 64.0), egui::Sense::hover());
         ui.painter()
             .rect_filled(rect, 5.0, Color32::from_rgb(8, 15, 25));
-        let max = self.energy_history.iter().copied().fold(1e-6_f32, f32::max);
+        let max = self
+            .energy_history
+            .iter()
+            .copied()
+            .fold(1e-14_f64, f64::max);
         let inner = rect.shrink(7.0);
         if self.energy_history.len() > 1 {
             let points: Vec<_> = self
@@ -293,7 +297,7 @@ impl ThreeBodyApp {
                     egui::pos2(
                         inner.left()
                             + i as f32 / (self.energy_history.len() - 1) as f32 * inner.width(),
-                        inner.bottom() - error / max * inner.height(),
+                        inner.bottom() - (error / max) as f32 * inner.height(),
                     )
                 })
                 .collect();
@@ -388,17 +392,15 @@ impl ThreeBodyApp {
                     self.fit_view(0.12);
                 }
                 let frame_dt = ui.input(|i| i.unstable_dt).clamp(0.0, 0.05);
-                self.params.duration = if self.reset.is_some() {
+                self.params.duration = if !self.snapshot.ready {
                     0.0
                 } else if self.step {
                     self.params.max_step
                 } else if self.running {
-                    frame_dt * self.speed
+                    f64::from(frame_dt) * f64::from(self.speed)
                 } else {
                     0.0
                 };
-                self.step = false;
-                self.reset.take();
                 ui.painter()
                     .add(eframe::egui_wgpu::Callback::new_paint_callback(
                         rect,
@@ -406,6 +408,7 @@ impl ThreeBodyApp {
                             params: self.params.clone(),
                             initial: self.active.clone(),
                             generation: self.generation,
+                            frame_id: ui.ctx().cumulative_frame_nr(),
                         },
                     ));
                 let painter = ui.painter();
@@ -460,13 +463,13 @@ impl ThreeBodyApp {
                     MUTED,
                 );
                 let warning = if let Some(error) = &self.snapshot.error {
-                    Some(format!("GPU readback failed: {error}"))
+                    Some(format!("Integration stopped: {error}"))
                 } else if self.snapshot.flags & 4 != 0 {
-                    Some("Precision limit reached. Reset, or try nonzero softening.".into())
+                    Some("Precision limit reached. Reset the simulation.".into())
                 } else if self.snapshot.flags & 2 != 0 {
-                    Some("Close encounter: simulation slowed to preserve the step limit.".into())
+                    Some("Work budget reached: simulation slowed to preserve accuracy.".into())
                 } else if self.snapshot.relative_energy_error() > 0.01 {
-                    Some("Energy drift exceeds 1%. Reduce Max dt and restart.".into())
+                    Some("Energy drift exceeds 1%. Tighten tolerances and restart.".into())
                 } else {
                     None
                 };

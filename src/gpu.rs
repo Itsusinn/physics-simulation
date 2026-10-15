@@ -3,26 +3,29 @@ use std::sync::{Arc, Mutex};
 use eframe::{egui, egui_wgpu, wgpu};
 use wgpu::util::DeviceExt as _;
 
-use crate::model::{FrameParams, HISTORY, InitialConditions, STATE_BYTES, Snapshot};
+use crate::{
+    model::{FrameParams, HISTORY, InitialConditions, STATE_BYTES, Snapshot},
+    simulation::Simulation,
+};
 
 #[derive(Default)]
-pub struct Readback {
+pub struct Diagnostics {
     pub snapshot: Snapshot,
-    pending: bool,
 }
 
 pub struct Gpu {
     state: wgpu::Buffer,
     uniform: wgpu::Buffer,
-    staging: wgpu::Buffer,
-    compute: wgpu::ComputePipeline,
-    compute_group: wgpu::BindGroup,
+    history: wgpu::Buffer,
+    simulation: Simulation,
+    history_next: u32,
+    history_count: u32,
     render_group: wgpu::BindGroup,
     background: wgpu::RenderPipeline,
     trails: wgpu::RenderPipeline,
     bodies: wgpu::RenderPipeline,
-    pub readback: Arc<Mutex<Readback>>,
-    frame: u32,
+    pub diagnostics: Arc<Mutex<Diagnostics>>,
+    last_frame: Option<u64>,
     generation: Option<u64>,
 }
 
@@ -38,39 +41,30 @@ impl Gpu {
         };
         let state = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("three-body state"),
-            contents: &InitialConditions::default().state_bytes(),
+            contents: &InitialConditions::default().render_bytes(0, 0),
             usage: wgpu::BufferUsages::STORAGE
                 | wgpu::BufferUsages::COPY_DST
                 | wgpu::BufferUsages::COPY_SRC,
         });
         let history = buffer(
-            "GPU trajectory ring",
+            "trajectory ring",
             u64::from(HISTORY) * 3 * 16,
-            wgpu::BufferUsages::STORAGE,
+            wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         );
         let uniform = buffer(
-            "simulation parameters",
-            64,
+            "render parameters",
+            48,
             wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         );
-        let staging = buffer(
-            "diagnostic readback",
-            STATE_BYTES,
-            wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
-        );
-        let make_layout = |read_only: bool, visibility| {
+        let make_layout = |visibility| {
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some(if read_only {
-                    "render resources"
-                } else {
-                    "compute resources"
-                }),
+                label: Some("render resources"),
                 entries: &[
                     wgpu::BindGroupLayoutEntry {
                         binding: 0,
                         visibility,
                         ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Storage { read_only },
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
                             has_dynamic_offset: false,
                             min_binding_size: wgpu::BufferSize::new(STATE_BYTES),
                         },
@@ -80,7 +74,7 @@ impl Gpu {
                         binding: 1,
                         visibility,
                         ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Storage { read_only },
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
                             has_dynamic_offset: false,
                             min_binding_size: wgpu::BufferSize::new(u64::from(HISTORY) * 3 * 16),
                         },
@@ -92,15 +86,14 @@ impl Gpu {
                         ty: wgpu::BindingType::Buffer {
                             ty: wgpu::BufferBindingType::Uniform,
                             has_dynamic_offset: false,
-                            min_binding_size: wgpu::BufferSize::new(64),
+                            min_binding_size: wgpu::BufferSize::new(48),
                         },
                         count: None,
                     },
                 ],
             })
         };
-        let compute_layout = make_layout(false, wgpu::ShaderStages::COMPUTE);
-        let render_layout = make_layout(true, wgpu::ShaderStages::VERTEX_FRAGMENT);
+        let render_layout = make_layout(wgpu::ShaderStages::VERTEX_FRAGMENT);
         let make_group = |layout: &wgpu::BindGroupLayout| {
             device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("three-body bindings"),
@@ -121,7 +114,6 @@ impl Gpu {
                 ],
             })
         };
-        let compute_group = make_group(&compute_layout);
         let render_group = make_group(&render_layout);
         let pipeline_layout = |layout: &wgpu::BindGroupLayout| {
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -130,25 +122,6 @@ impl Gpu {
                 immediate_size: 0,
             })
         };
-        let compute_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("velocity Verlet compute shader"),
-            source: wgpu::ShaderSource::Wgsl(
-                concat!(
-                    include_str!("shaders/common.wgsl"),
-                    "\n",
-                    include_str!("shaders/simulate.wgsl")
-                )
-                .into(),
-            ),
-        });
-        let compute = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some("three-body integrator"),
-            layout: Some(&pipeline_layout(&compute_layout)),
-            module: &compute_shader,
-            entry_point: Some("simulate"),
-            compilation_options: Default::default(),
-            cache: None,
-        });
         let render_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("orbital visualization shader"),
             source: wgpu::ShaderSource::Wgsl(
@@ -191,81 +164,76 @@ impl Gpu {
         Self {
             state,
             uniform,
-            staging,
-            compute,
-            compute_group,
+            history,
+            simulation: Simulation::new(InitialConditions::default(), 0).unwrap(),
+            history_next: 0,
+            history_count: 0,
             render_group,
             background: render("orbital grid", "background_vs", "background_fs"),
             trails: render("orbit trails", "trail_vs", "trail_fs"),
             bodies: render("glowing bodies", "body_vs", "body_fs"),
-            readback: Arc::default(),
-            frame: 0,
+            diagnostics: Arc::default(),
+            last_frame: None,
             generation: None,
         }
     }
 
-    pub fn encode(
+    pub fn update(
         &mut self,
         queue: &wgpu::Queue,
-        encoder: &mut wgpu::CommandEncoder,
         params: &FrameParams,
         reset: Option<&InitialConditions>,
         generation: u64,
-        read: bool,
     ) {
         if let Some(initial) = reset {
-            queue.write_buffer(&self.state, 0, &initial.state_bytes());
-            self.generation = Some(generation);
-        }
-        queue.write_buffer(&self.uniform, 0, &params.bytes());
-        {
-            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: Some("advance three bodies"),
-                timestamp_writes: None,
-            });
-            pass.set_pipeline(&self.compute);
-            pass.set_bind_group(0, &self.compute_group, &[]);
-            pass.dispatch_workgroups(1, 1, 1);
-        }
-        if read {
-            let mut shared = self.readback.lock().unwrap();
-            if !shared.pending {
-                shared.pending = true;
-                drop(shared);
-                encoder.copy_buffer_to_buffer(&self.state, 0, &self.staging, 0, STATE_BYTES);
-                let staging = self.staging.clone();
-                let shared = self.readback.clone();
-                encoder.map_buffer_on_submit(
-                    &self.staging,
-                    wgpu::MapMode::Read,
-                    ..,
-                    move |result| {
-                        let snapshot = match result {
-                            Ok(()) => {
-                                let snapshot = match staging.get_mapped_range(..) {
-                                    Ok(bytes) => Snapshot::decode(&bytes, generation),
-                                    Err(error) => Snapshot {
-                                        generation,
-                                        error: Some(error.to_string()),
-                                        ..Default::default()
-                                    },
-                                };
-                                staging.unmap();
-                                snapshot
-                            }
-                            Err(error) => Snapshot {
-                                generation,
-                                error: Some(error.to_string()),
-                                ..Default::default()
-                            },
-                        };
-                        let mut shared = shared.lock().unwrap();
-                        shared.snapshot = snapshot;
-                        shared.pending = false;
-                    },
-                );
+            match Simulation::new(initial.clone(), generation) {
+                Ok(simulation) => self.simulation = simulation,
+                Err(error) => {
+                    self.diagnostics.lock().unwrap().snapshot = Snapshot {
+                        generation,
+                        flags: 4,
+                        error: Some(error.into()),
+                        ..Default::default()
+                    };
+                    return;
+                }
             }
+            self.generation = Some(generation);
+            self.history_next = 0;
+            self.history_count = 0;
+            self.sample_history(queue);
         }
+        let before = self.simulation.snapshot.time;
+        self.simulation.advance(params);
+        if self.simulation.snapshot.time > before {
+            self.sample_history(queue);
+        }
+        queue.write_buffer(
+            &self.state,
+            0,
+            &self
+                .simulation
+                .state
+                .render_bytes(self.history_next, self.history_count),
+        );
+        queue.write_buffer(&self.uniform, 0, &params.bytes());
+        self.diagnostics.lock().unwrap().snapshot = self.simulation.snapshot.clone();
+    }
+
+    fn sample_history(&mut self, queue: &wgpu::Queue) {
+        for (i, body) in self.simulation.state.bodies.iter().enumerate() {
+            let mut bytes = Vec::with_capacity(16);
+            for value in [body.position[0] as f32, body.position[1] as f32, 0.0, 0.0] {
+                bytes.extend_from_slice(&value.to_le_bytes());
+            }
+            queue.write_buffer(
+                &self.history,
+                (i as u64 * u64::from(HISTORY) + u64::from(self.history_next)) * 16,
+                &bytes,
+            );
+        }
+        self.history_next = (self.history_next + 1) % HISTORY;
+        self.history_count = (self.history_count + 1).min(HISTORY);
     }
 
     pub fn paint(&self, pass: &mut wgpu::RenderPass<'_>) {
@@ -283,6 +251,7 @@ pub struct SimulationCallback {
     pub params: FrameParams,
     pub initial: InitialConditions,
     pub generation: u64,
+    pub frame_id: u64,
 }
 
 impl egui_wgpu::CallbackTrait for SimulationCallback {
@@ -291,15 +260,17 @@ impl egui_wgpu::CallbackTrait for SimulationCallback {
         _device: &wgpu::Device,
         queue: &wgpu::Queue,
         _screen: &egui_wgpu::ScreenDescriptor,
-        encoder: &mut wgpu::CommandEncoder,
+        _encoder: &mut wgpu::CommandEncoder,
         resources: &mut egui_wgpu::CallbackResources,
     ) -> Vec<wgpu::CommandBuffer> {
         let gpu: &mut Gpu = resources.get_mut().unwrap();
-        gpu.frame = gpu.frame.wrapping_add(1);
-        // A discarded egui layout pass must not consume the only reset request.
-        let reset = (gpu.generation != Some(self.generation)).then_some(&self.initial);
-        let read = gpu.frame.is_multiple_of(6) || reset.is_some() || self.params.duration == 0.0;
-        gpu.encode(queue, encoder, &self.params, reset, self.generation, read);
+        // Only a painted callback advances physics. Repeated preparation of the
+        // same egui frame must not advance time or append duplicate trail samples.
+        if gpu.last_frame != Some(self.frame_id) || gpu.generation != Some(self.generation) {
+            let reset = (gpu.generation != Some(self.generation)).then_some(&self.initial);
+            gpu.update(queue, &self.params, reset, self.generation);
+            gpu.last_frame = Some(self.frame_id);
+        }
         Vec::new()
     }
 

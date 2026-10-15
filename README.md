@@ -1,8 +1,8 @@
-# Three Body
+# physics-simulation
 
 An interactive physics laboratory featuring the classic Pythagorean three-body problem, spatial three-body motion, a double pendulum, coupled spring oscillators, and Kepler orbits. Built with Rust/WASM, Bevy 0.20, bevy_egui, WebGPU, and Trunk. Physics uses the Rust `ode_solvers` DOP853 integrator with CPU double precision; WebGPU renders the experiments and trails.
 
-[Live demo](https://itsusinn.github.io/apps/three-body/)
+[Live demo](https://itsusinn.github.io/apps/physics-simulation/)
 
 Adjust initial conditions and simulation parameters, explore orbital trails, and monitor energy and momentum. Requires a WebGPU-capable browser on HTTPS or localhost.
 

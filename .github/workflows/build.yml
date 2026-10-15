@@ -8,7 +8,7 @@ on:
   workflow_call:
     inputs:
       ref:
-        description: Exact three-body commit to build for the website
+        description: Exact physics-simulation commit to build for the website
         required: true
         type: string
 
@@ -25,7 +25,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          repository: Itsusinn/three-body
+          repository: Itsusinn/physics-simulation
           ref: ${{ inputs.ref || github.sha }}
           persist-credentials: false
       - name: Install pinned Rust toolchain
@@ -36,9 +36,9 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: three-body-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}-${{ hashFiles('src/**', 'Cargo.toml') }}
+          key: physics-simulation-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}-${{ hashFiles('src/**', 'Cargo.toml') }}
           restore-keys: |
-            three-body-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}-
+            physics-simulation-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}-
       - name: Check formatting and WASM code
         run: |
           cargo fmt --check
@@ -56,7 +56,7 @@ jobs:
           assert list(root.glob('*.js')), 'Missing JavaScript loader'
           assert 'live_reload' not in (root / 'index.html').read_text(encoding='utf-8')
           sha = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
-          (root / 'version.json').write_text(json.dumps({'repository': 'Itsusinn/three-body', 'commit': sha}) + '\n', encoding='utf-8')
+          (root / 'version.json').write_text(json.dumps({'repository': 'Itsusinn/physics-simulation', 'commit': sha}) + '\n', encoding='utf-8')
           sizes = []
           for wasm in root.glob('*.wasm'):
               data = wasm.read_bytes()
@@ -71,7 +71,7 @@ jobs:
           PY
       - uses: actions/upload-artifact@v4
         with:
-          name: three-body-web
+          name: physics-simulation-web
           path: dist/
           if-no-files-found: error
           retention-days: 14
@@ -80,7 +80,7 @@ jobs:
     name: Trigger website deployment
     needs: build
     if: >-
-      github.repository == 'Itsusinn/three-body' &&
+      github.repository == 'Itsusinn/physics-simulation' &&
       github.ref == 'refs/heads/main' &&
       (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-24.04

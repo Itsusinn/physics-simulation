@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="theme-color" content="#080d17" />
-    <title>Three Body · Orbital laboratory</title>
+    <title>physics-simulation · Physics laboratory</title>
     <link data-trunk rel="rust" data-initializer="loading.mjs" data-wasm-opt="z" data-wasm-opt-params="--strip-debug --strip-producers" />
     <style>
       html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background: #080d17; color: #dbe7f7; font-family: system-ui, sans-serif; }
@@ -27,27 +27,27 @@
     </style>
   </head>
   <body>
-    <canvas id="simulation" aria-label="Interactive three-body simulation"></canvas>
+    <canvas id="simulation" aria-label="Interactive physics simulation"></canvas>
     <div id="loading">
-      <h1>THREE BODY</h1>
-      <p id="loading-status" role="status">Preparing the orbital laboratory…</p>
+      <h1>physics-simulation</h1>
+      <p id="loading-status" role="status">Preparing the physics laboratory…</p>
       <progress id="loading-progress" max="100" aria-label="WASM download progress" aria-describedby="loading-detail"></progress>
       <p id="loading-detail">Connecting…</p>
       <button id="loading-retry" type="button" hidden>Try again</button>
-      <noscript><p>Enable JavaScript to launch the orbital laboratory.</p></noscript>
+      <noscript><p>Enable JavaScript to launch the physics laboratory.</p></noscript>
     </div>
     <script>
       function showLoadingError(error) {
         const loading = document.getElementById('loading');
         loading.dataset.failed = 'true';
         loading.style.display = 'grid';
-        document.getElementById('loading-status').textContent = 'Unable to start the orbital laboratory';
+        document.getElementById('loading-status').textContent = 'Unable to start the physics laboratory';
         document.getElementById('loading-progress').hidden = true;
         document.getElementById('loading-detail').textContent = `Application error: ${error?.message || error || 'Unknown error'}. Please try again.`;
         document.getElementById('loading-retry').hidden = false;
       }
       document.getElementById('loading-retry').addEventListener('click', () => window.location.reload());
-      window.addEventListener('three-body-load-error', (event) => showLoadingError(event.detail));
+      window.addEventListener('physics-simulation-load-error', (event) => showLoadingError(event.detail));
       window.addEventListener('error', (event) => {
         if (event.message) {
           showLoadingError(event.error || event.message);

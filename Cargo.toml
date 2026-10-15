@@ -1,9 +1,9 @@
 [package]
-name = "three-body"
+name = "physics-simulation"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.97.1"
-description = "Interactive Pythagorean three-body laboratory powered by WebGPU"
+description = "Interactive physics laboratory powered by WebGPU"
 license = "MIT OR Apache-2.0"
 
 [dependencies]

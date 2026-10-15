@@ -1,6 +1,6 @@
-# Three Body · 3-4-5 三体实验室
+# physics-simulation · 物理实验室
 
-浏览器中的经典毕达哥拉斯三体模拟。使用经确认的 **Rust / WASM + Bevy 0.20.0 + bevy_egui 0.43.1 + wgpu + Trunk**。用户已确认将物理计算迁至 CPU，使用 **Rust `ode_solvers` 0.6.2 的 DOP853 + f64**；WebGPU 负责天体、轨迹与网格渲染。积分状态、初始条件和守恒量诊断全部保留双精度，只在上传显示数据时转换为 f32。没有 JavaScript 物理引擎或额外前端框架。
+浏览器中的交互式物理实验室，包含二维与三维三体、双摆、耦合弹簧和开普勒轨道。使用经确认的 **Rust / WASM + Bevy 0.20.0 + bevy_egui 0.43.1 + wgpu + Trunk**。用户已确认将物理计算迁至 CPU，使用 **Rust `ode_solvers` 0.6.2 的 DOP853 + f64**；WebGPU 负责天体、轨迹与网格渲染。积分状态、初始条件和守恒量诊断全部保留双精度，只在上传显示数据时转换为 f32。没有 JavaScript 物理引擎或额外前端框架。
 
 ## 运行
 
@@ -49,19 +49,21 @@ release 使用 `opt-level = "s"`、完整 LTO 和单个 codegen unit；迁移前
 
 ## 持续集成
 
-源码仓库：<https://github.com/Itsusinn/three-body>。
+源码仓库：<https://github.com/Itsusinn/physics-simulation>。
 
-推送到 `main` 或创建 pull request 后，GitHub Actions 使用 `rust-toolchain.toml` 固定的 Rust 1.98.1 和经过 SHA-256 校验的 Trunk 0.21.14，执行格式检查、WASM Clippy 检查和锁定依赖的 release 构建。生成的 `three-body-web` artifact 包含完整 HTML / JS / WASM 和记录源码提交的 `version.json`，保留 14 天。工作流也支持手动运行和由网站工作流调用。
+推送到 `main` 或创建 pull request 后，GitHub Actions 使用 `rust-toolchain.toml` 固定的 Rust 1.98.1 和经过 SHA-256 校验的 Trunk 0.21.14，执行格式检查、WASM Clippy 检查和锁定依赖的 release 构建。生成的 `physics-simulation-web` artifact 包含完整 HTML / JS / WASM 和记录源码提交的 `version.json`，保留 14 天。工作流也支持手动运行和由网站工作流调用。
 
 CI 同时校验 Binaryen 133 的下载摘要，并在 Actions summary 与产物 `size-report.json` 中记录 WASM 原始字节数和 gzip-9 估算。WASM 总体积上限为 18,000,000 字节；超过时构建失败。gzip 数值用于对比，不代表服务器实际传输大小，也不会生成用于部署的 `.gz` 文件。
 
-CI 目前执行上述 WASM 检查和构建；原生物理与渲染测试在本地执行，其中仅渲染测试需要 GPU adapter。应用使用相对资源路径，可部署在 `/apps/three-body/` 子目录。
+CI 目前执行上述 WASM 检查和构建；原生物理与渲染测试在本地执行，其中仅渲染测试需要 GPU adapter。应用使用相对资源路径，可部署在 `/apps/physics-simulation/` 子目录。
 
 ## 自动发布
 
-线上地址：<https://itsusinn.github.io/apps/three-body/>。
+线上地址：<https://itsusinn.github.io/apps/physics-simulation/>。
 
-`main` 构建成功后，`deploy-website` 任务即时触发 `Itsusinn/itsusinn.github.io` 的 `deploy.yml`。网站工作流解析三体 `main` 的最新提交，调用本仓库的可复用构建流程，再将产物放入网站的 `site/apps/three-body/`，校验整个网站并发布到 GitHub Pages。网站始终构建完整站点，博客和模拟应用一起发布。Pull request 只检查，不触发发布；网站调用本工作流时也不会再次触发网站，避免递归。
+原 `/apps/three-body/` 入口由网站保留跳转到新地址。
+
+`main` 构建成功后，`deploy-website` 任务即时触发 `Itsusinn/itsusinn.github.io` 的 `deploy.yml`。网站工作流解析物理实验室 `main` 的最新提交，调用本仓库的可复用构建流程，再将产物放入网站的 `site/apps/physics-simulation/`，校验整个网站并发布到 GitHub Pages。网站始终构建完整站点，博客和模拟应用一起发布。Pull request 只检查，不触发发布；网站调用本工作流时也不会再次触发网站，避免递归。
 
 首次配置：
 
@@ -71,7 +73,7 @@ CI 目前执行上述 WASM 检查和构建；原生物理与渲染测试在本�
 
 不要将令牌写入源码。缺少或过期的令牌会使通知任务明确失败，但仍保留已通过的构建产物。配置好 secret 后可以重跑失败任务，或手动运行本仓库的 **Build WebGPU app**。也可手动运行网站的 **CI and Pages** 完成发布。
 
-通知成功表示网站工作流已入队；实际发布结果请查看网站仓库的 Actions。线上 `/apps/three-body/version.json` 记录已发布的源码提交。GitHub 托管执行器的排队和构建会带来延迟。
+通知成功表示网站工作流已入队；实际发布结果请查看网站仓库的 Actions。线上 `/apps/physics-simulation/version.json` 记录已发布的源码提交。GitHub 托管执行器的排队和构建会带来延迟。
 
 ## 操作
 

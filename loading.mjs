@@ -9,7 +9,7 @@ export default function initializer() {
   return {
     onStart() {
       if (loading.dataset.failed) return;
-      status.textContent = 'Downloading the orbital laboratory…';
+      status.textContent = 'Downloading the physics laboratory…';
       progress.removeAttribute('value');
       detail.textContent = 'Connecting…';
     },
@@ -20,7 +20,7 @@ export default function initializer() {
         progress.value = percent;
         detail.textContent = `${percent}% · ${mebibytes(current)} / ${mebibytes(total)}`;
         if (current >= total) {
-          status.textContent = 'Initializing the orbital laboratory…';
+          status.textContent = 'Initializing the physics laboratory…';
           detail.textContent = `Download complete · ${mebibytes(total)}`;
         }
       } else {
@@ -36,7 +36,7 @@ export default function initializer() {
       // The existing Bevy scene lifecycle hides the overlay when its UI is ready.
     },
     onFailure(error) {
-      window.dispatchEvent(new CustomEvent('three-body-load-error', { detail: error }));
+      window.dispatchEvent(new CustomEvent('physics-simulation-load-error', { detail: error }));
     },
   };
 }

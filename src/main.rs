@@ -30,7 +30,7 @@ fn main() {
             DefaultPlugins
                 .set(WindowPlugin {
                     primary_window: Some(Window {
-                        title: "Three Body - Orbital laboratory".into(),
+                        title: "physics-simulation - Physics laboratory".into(),
                         canvas: Some("#simulation".into()),
                         fit_canvas_to_parent: true,
                         prevent_default_event_handling: true,

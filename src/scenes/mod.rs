@@ -2,6 +2,7 @@
 //! each factory owns its UI, simulation and display state independently.
 mod style;
 mod three_body;
+mod three_d;
 pub(crate) use style::configure_style;
 
 use bevy::prelude::*;
@@ -20,10 +21,16 @@ pub struct SceneDefinition {
     pub create: fn() -> Box<dyn Scene>,
 }
 
-pub const SCENES: &[SceneDefinition] = &[SceneDefinition {
-    id: "2d-345-threebody",
-    create: three_body::create,
-}];
+pub const SCENES: &[SceneDefinition] = &[
+    SceneDefinition {
+        id: "2d-345-threebody",
+        create: three_body::create,
+    },
+    SceneDefinition {
+        id: "3d-threebody",
+        create: three_d::create,
+    },
+];
 
 #[derive(Resource)]
 pub struct SceneManager {

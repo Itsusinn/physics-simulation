@@ -118,3 +118,21 @@ fn selector_and_scene_fit_narrow_and_wide_layouts() {
         output.drop_without_applying_deltas();
     }
 }
+
+#[test]
+fn registered_scenes_can_switch_both_directions() {
+    let mut manager = SceneManager::default();
+    assert_eq!(manager.definitions[0].id, "2d-345-threebody");
+    assert_eq!(manager.definitions[1].id, "3d-threebody");
+    let ctx = egui::Context::default();
+    configure_style(&ctx);
+    for index in [1, 0, 1] {
+        manager.pending = Some(index);
+        manager.advance(60.0);
+        assert_eq!(manager.active, index);
+        assert!(!manager.is_running());
+        let output = ctx.run_ui(egui::RawInput::default(), |ui| manager.ui(ui));
+        assert!(!output.shapes.is_empty());
+        output.drop_without_applying_deltas();
+    }
+}

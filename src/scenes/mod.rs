@@ -1,5 +1,6 @@
 //! Application shell and scene lifecycle. Register new scenes in SCENES;
 //! each factory owns its UI, simulation and display state independently.
+mod blocks;
 mod mechanics;
 mod style;
 mod three_body;
@@ -15,9 +16,16 @@ pub trait Scene: Send + Sync {
     fn advance(&mut self, delta_seconds: f64);
     fn ui(&mut self, ui: &mut egui::Ui);
     fn is_running(&self) -> bool;
-    fn algorithm(&self) -> Algorithm;
+    /// None for a scene with a dedicated collision solver.
+    fn algorithm(&self) -> Option<Algorithm>;
     /// Called at the Update boundary. Must preserve physical state and history.
     fn set_algorithm(&mut self, algorithm: Algorithm) -> Result<(), &'static str>;
+}
+
+pub struct FixedSolver {
+    pub name: &'static str,
+    pub description: &'static str,
+    pub supported_scenes: &'static [&'static str],
 }
 
 pub struct SceneDefinition {
@@ -25,6 +33,8 @@ pub struct SceneDefinition {
     pub id: &'static str,
     /// Ordered recommendations; the first entry is the default on scene entry.
     pub recommended_algorithms: &'static [Algorithm],
+    /// Dedicated recommended solver for scenes outside the ODE registry.
+    pub fixed_solver: Option<&'static FixedSolver>,
     pub create: fn() -> Box<dyn Scene>,
 }
 
@@ -32,27 +42,38 @@ pub const SCENES: &[SceneDefinition] = &[
     SceneDefinition {
         id: "2d-345-threebody",
         recommended_algorithms: &[Algorithm::Dop853, Algorithm::Dopri5],
+        fixed_solver: None,
         create: three_body::create,
     },
     SceneDefinition {
         id: "3d-threebody",
         recommended_algorithms: &[Algorithm::Dop853, Algorithm::Dopri5],
+        fixed_solver: None,
         create: three_d::create,
     },
     SceneDefinition {
         id: "2d-double-pendulum",
         recommended_algorithms: &[Algorithm::Dop853, Algorithm::Dopri5],
+        fixed_solver: None,
         create: mechanics::double_pendulum,
     },
     SceneDefinition {
         id: "1d-coupled-springs",
         recommended_algorithms: &[Algorithm::Dop853, Algorithm::VelocityVerlet],
+        fixed_solver: None,
         create: mechanics::coupled_springs,
     },
     SceneDefinition {
         id: "2d-kepler-orbit",
         recommended_algorithms: &[Algorithm::Dop853, Algorithm::VelocityVerlet],
+        fixed_solver: None,
         create: mechanics::kepler_orbit,
+    },
+    SceneDefinition {
+        id: "2d-block-collisions",
+        recommended_algorithms: &[],
+        fixed_solver: Some(&blocks::SOLVER),
+        create: blocks::create,
     },
 ];
 
@@ -145,7 +166,13 @@ impl SceneManager {
                     self.pending = (selected != self.active).then_some(selected);
                     ui.add_enabled_ui(self.pending.is_none(), |ui| {
                         let scene = &self.definitions[self.active];
-                        let mut algorithm = self.pending_algorithm.unwrap_or(self.scene.algorithm());
+                        let Some(current) = self.scene.algorithm() else {
+                            if let Some(solver) = scene.fixed_solver {
+                                ui.label(solver.name).on_hover_text(format!("Recommended: {}\n{}\nSupported scenes: {}", solver.name, solver.description, solver.supported_scenes.join(", ")));
+                            }
+                            return;
+                        };
+                        let mut algorithm = self.pending_algorithm.unwrap_or(current);
                         ui.label("Algorithm");
                         egui::ComboBox::from_id_salt("algorithm")
                             .selected_text(algorithm.definition().name)
@@ -158,7 +185,7 @@ impl SceneManager {
                                         .on_hover_text(format!("{}\nID: {}\nSupported scenes: {}", entry.description, entry.id, entry.supported_scenes.join(", ")));
                                 }
                             });
-                        self.pending_algorithm = (algorithm != self.scene.algorithm()).then_some(algorithm);
+                        self.pending_algorithm = (algorithm != current).then_some(algorithm);
                         ui.label("About algorithms").on_hover_ui(|ui| {
                             ui.label(algorithm.definition().description);
                             ui.label(format!("Recommended: {}", scene.recommended_algorithms.iter().map(|a| a.definition().name).collect::<Vec<_>>().join(", ")));

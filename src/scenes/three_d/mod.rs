@@ -234,8 +234,8 @@ impl ThreeBody3d {
 }
 
 impl Scene for ThreeBody3d {
-    fn algorithm(&self) -> crate::integrators::Algorithm {
-        self.params.algorithm
+    fn algorithm(&self) -> Option<crate::integrators::Algorithm> {
+        Some(self.params.algorithm)
     }
 
     fn set_algorithm(

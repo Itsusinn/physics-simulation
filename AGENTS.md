@@ -1,6 +1,6 @@
 # physics-simulation · 物理实验室
 
-浏览器中的交互式物理实验室，包含二维与三维三体、双摆、耦合弹簧和开普勒轨道。使用经确认的 **Rust / WASM + Bevy 0.20.0 + bevy_egui 0.43.1 + wgpu + Trunk**。用户已确认将物理计算迁至 CPU，默认使用 **Rust `ode_solvers` 0.6.2 的 DOP853 + f64**，支持运行时切换积分算法；WebGPU 负责天体、轨迹与网格渲染。积分状态、初始条件和守恒量诊断全部保留双精度，只在上传显示数据时转换为 f32。没有 JavaScript 物理引擎或额外前端框架。
+浏览器中的交互式物理实验室，包含二维与三维三体、双摆、耦合弹簧、开普勒轨道和滑块碰撞。使用经确认的 **Rust / WASM + Bevy 0.20.0 + bevy_egui 0.43.1 + wgpu + Trunk**。物理计算位于 CPU，五个 ODE 场景默认使用 **Rust `ode_solvers` 0.6.2 的 DOP853 + f64**，支持运行时切换积分算法，积分状态、初始条件和守恒量诊断全部保留双精度，只在上传显示数据时转换为 f32。用户指定的新滑块场景使用 Avian PR #1070 的碰撞求解器，其精度与调度说明见后文。WebGPU 负责渲染；没有 JavaScript 物理引擎或额外前端框架。
 
 ## 运行
 
@@ -53,7 +53,7 @@ release 使用 `opt-level = "s"`、完整 LTO 和单个 codegen unit；迁移前
 
 推送到 `main` 或创建 pull request 后，GitHub Actions 使用 `rust-toolchain.toml` 固定的 Rust 1.98.1 和经过 SHA-256 校验的 Trunk 0.21.14，执行格式检查、WASM Clippy 检查和锁定依赖的 release 构建。生成的 `physics-simulation-web` artifact 包含完整 HTML / JS / WASM 和记录源码提交的 `version.json`，保留 14 天。工作流也支持手动运行和由网站工作流调用。
 
-CI 同时校验 Binaryen 133 的下载摘要，并在 Actions summary 与产物 `size-report.json` 中记录 WASM 原始字节数和 gzip-9 估算。WASM 总体积上限为 18,000,000 字节；超过时构建失败。gzip 数值用于对比，不代表服务器实际传输大小，也不会生成用于部署的 `.gz` 文件。
+CI 同时校验 Binaryen 133 的下载摘要，并在 Actions summary 与产物 `size-report.json` 中记录 WASM 原始字节数和 gzip-9 估算。WASM 总体积上限为 20,000,000 字节；超过时构建失败。gzip 数值用于对比，不代表服务器实际传输大小，也不会生成用于部署的 `.gz` 文件。
 
 CI 目前执行上述 WASM 检查和构建；原生物理与渲染测试在本地执行，其中仅渲染测试需要 GPU adapter。应用使用相对资源路径，可部署在 `/apps/physics-simulation/` 子目录。
 
@@ -77,7 +77,7 @@ CI 目前执行上述 WASM 检查和构建；原生物理与渲染测试在本�
 
 ## 操作
 
-- 顶部 **Scene** 下拉菜单切换 `2d-345-threebody`（默认）、`3d-threebody`、`2d-double-pendulum`、`1d-coupled-springs` 与 `2d-kepler-orbit`。切换在下一个 Bevy `Update` 生效，释放旧场景的模拟、草稿和历史，新场景从初始暂停状态开始；重复选择当前场景不会重置。隐藏 Parameters 不会隐藏场景入口。
+- 顶部 **Scene** 下拉菜单切换 `2d-345-threebody`（默认）、`3d-threebody`、`2d-double-pendulum`、`1d-coupled-springs` 、`2d-kepler-orbit` 与 `2d-block-collisions`。切换在下一个 Bevy `Update` 生效，释放旧场景的模拟、草稿和历史，新场景从初始暂停状态开始；重复选择当前场景不会重置。隐藏 Parameters 不会隐藏场景入口。
 - **Run / Pause** 或空格：运行、暂停。启动时暂停，保留经典初始构型。
 - **Step**：暂停时请求推进一个 Max dt 的模拟时间；误差控制可能拆成多个子步，遇到工作量上限时只推进已完成的部分。
 - **Reset** 或 R：恢复当前已应用的初始条件，并清空轨迹与误差历史。
@@ -176,6 +176,20 @@ Run / Pause、Step、Reset、空格与 R 均可使用。初始参数草稿点击
 
 验证包括弹簧解析正常模与解耦极限、开普勒周期闭合与角动量、双摆独立显式方程 RK4 对照与收紧容差、所有预设至 t=20 的能量守恒、奇点停止和工作预算，以及暂停/单步/重置/错误恢复/草稿隔离/历史容量、所有场景往返切换和窄宽屏多轮网格化。聚焦测试：`cargo test --jobs 2 scenes::mechanics:: -- --nocapture`。
 
+## Avian 滑块碰撞场景
+
+2026-10-15 Windows release 实测：WASM 原始大小 **18,638,724 字节**，gzip-9 估算 **5,965,105 字节**。已精简为场景所需的接触插件，不注册空间查询、关节及插值插件。用户确认将 CI 原始体积预算从 18,000,000 调整为 **20,000,000 字节**。
+
+用户已确认接入 Avian，并指定使用 [PR #1070](https://github.com/avianphysics/avian/pull/1070)。`avian2d` Git 依赖固定为 `34c9b008d2f40638a953d9218db48d54f661365d`；其 Git 子依赖由上游清单和 Cargo.lock 固定。与应用共享 Bevy 0.20，不引入第二套 Bevy。只启用 `2d` / `f64` / `parry-f64`，关闭默认特性。原有五个 ODE 场景继续使用已有可切换积分器。
+
+`2d-block-collisions`：L 型墙的竖边位于 x=0，横边为水平轨道。左侧小滑块质量 1、边长 0.7、中心 x=2、初始静止；右侧大滑块质量 100、边长 1.4、中心 x=5、初速度 -1。锁定竖直位移及旋转，无重力、无摩擦，恢复系数默认为 1。Avian 负责碰撞检测与响应；图形尺寸对应真实碰撞体。横轨道绘制到视窗边缘，超出有限地面碰撞体后仍由水平约束限制运动。
+
+参数支持整数质量 1–100、来向速度 0.1–3、恢复系数 0–1；草稿 Apply & restart 在下次 Update 应用并暂停，Reset 使用最近已应用的配置。Run/Pause、Step（0.05 模拟秒）、空格、R、平移、缩放、自动适配均可用。场景中醒目显示总碰撞次数及滑块/滑块、滑块/墙分项，隐藏 Parameters 后仍可见。总次数为两项新接触次数之和，暂停保持，Reset 或 Apply & restart 后归零；持续接触不重复计数。诊断还包括速度、动能及相对动能变化。
+
+场景独立拥有无窗口/无渲染的 Bevy World，只在 `advance` 内以 0.001 秒固定步长推进，每步含 8 个求解子步。启用针对所有刚体类型的 swept CCD，关闭 speculative contacts，将穿透修正速度限制为 0.1，减少非弹性连续接触中的人为反弹。单帧墙钟时间截断至 0.05 秒后乘 Speed，最多 256 步，丢弃超预算的整步时间并提示，仅保留不足一步的余量。UI 多轮布局不推进；退出场景释放物理世界。`Scene::algorithm()` 为可选 ODE 方法，此场景返回 None、ODE 推荐列表为空，`fixed_solver` 提供推荐碰撞求解器与支持场景元数据，顶部显示 Avian 专用碰撞求解器。
+
+该 Avian 修订的位置用 f64；速度、质量、碰撞体尺寸和接触求解用 f32，诊断将引擎状态转换为 f64 计算（不恢复已损失精度）。输入整数质量可精确表示，但逆质量舍入和接触求解仍可能引入误差。不能沿用 ODE 场景的全双精度承诺；恢复系数 1 也不保证严格守恒或精确碰撞计数。非有限数值、过大穿透或显示越界时停止并保留最后有效快照，Reset 恢复。`src/scenes/blocks/` 包含实现及测试；聚焦检查：`cargo test --jobs 2 scenes::blocks:: -- --nocapture`。
+
 ## 代码结构
 
 - `src/main.rs`：Bevy 窗口、WebGPU、相机和系统注册。
@@ -183,6 +197,7 @@ Run / Pause、Step、Reset、空格与 R 均可使用。初始参数草稿点击
 - `src/scenes/three_body.rs`：`2d-345-threebody` 场景，持有并调度现有三体界面、物理与轨迹状态。
 - `src/scenes/three_d/`：`3d-threebody` 场景；`mod.rs` 管理界面与运行状态，`model.rs` / `physics.rs` 负责三维 f64 模型与积分，`camera.rs` / `render.rs` / `render.wgsl` 负责透视相机和深度绘制。对应测试与场景代码放在同一目录。
 - `src/scenes/mechanics/`：双摆、耦合弹簧与开普勒场景；`physics.rs` 负责独立力学模型和有界 f64 可切换积分，`mod.rs` 负责控制、相机、轨迹和 egui 图元，`physics_tests.rs` / `tests.rs` 验证物理及生命周期。
+- `src/scenes/blocks/`：Avian 滑块碰撞场景、独立物理世界、控制、绘制及碰撞/生命周期测试。
 - `src/scenes/style.rs`：所有场景共用的 egui 外观。
 - `src/scenes/tests.rs`：场景切换、退出释放、重复选择、多轮布局和窄屏验证。
 - `src/app.rs`：三体场景的界面状态，以及 egui 参数、交互、诊断图表和视野控制。

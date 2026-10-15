@@ -89,7 +89,20 @@ fn registry_references_real_scenes_and_recommendations_are_supported() {
         }
     }
     for scene in crate::scenes::SCENES {
-        assert!(!scene.recommended_algorithms.is_empty());
+        assert_eq!(
+            scene.recommended_algorithms.is_empty(),
+            (scene.create)().algorithm().is_none()
+        );
+        assert_eq!(
+            scene.fixed_solver.is_some(),
+            (scene.create)().algorithm().is_none()
+        );
+        if let Some(solver) = scene.fixed_solver {
+            assert!(solver.supported_scenes.contains(&scene.id));
+            for id in solver.supported_scenes {
+                assert!(crate::scenes::SCENES.iter().any(|s| s.id == *id));
+            }
+        }
         for algorithm in scene.recommended_algorithms {
             assert!(algorithm.supports(scene.id));
         }

@@ -400,8 +400,8 @@ fn spring(painter: &egui::Painter, start: Pos2, end: Pos2) {
 }
 
 impl Scene for Mechanics {
-    fn algorithm(&self) -> crate::integrators::Algorithm {
-        self.params.algorithm
+    fn algorithm(&self) -> Option<crate::integrators::Algorithm> {
+        Some(self.params.algorithm)
     }
 
     fn set_algorithm(

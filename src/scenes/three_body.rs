@@ -17,8 +17,8 @@ pub(super) fn create() -> Box<dyn Scene> {
 }
 
 impl Scene for ThreeBodyScene {
-    fn algorithm(&self) -> crate::integrators::Algorithm {
-        self.app.params.algorithm
+    fn algorithm(&self) -> Option<crate::integrators::Algorithm> {
+        Some(self.app.params.algorithm)
     }
 
     fn set_algorithm(

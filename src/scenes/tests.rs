@@ -6,8 +6,8 @@ static EVENTS: Mutex<Vec<(&str, f64)>> = Mutex::new(Vec::new());
 struct ProbeScene;
 
 impl Scene for ProbeScene {
-    fn algorithm(&self) -> Algorithm {
-        Algorithm::Dop853
+    fn algorithm(&self) -> Option<Algorithm> {
+        Some(Algorithm::Dop853)
     }
     fn set_algorithm(&mut self, _: Algorithm) -> Result<(), &'static str> {
         Ok(())
@@ -36,11 +36,13 @@ static TEST_SCENES: &[SceneDefinition] = &[
     SceneDefinition {
         id: "2d-345-threebody",
         recommended_algorithms: &[Algorithm::Dop853],
+        fixed_solver: None,
         create: three_body::create,
     },
     SceneDefinition {
         id: "test-only-scene",
         recommended_algorithms: &[],
+        fixed_solver: None,
         create: probe,
     },
 ];
@@ -154,7 +156,7 @@ fn algorithm_switch_is_deferred_and_scene_switch_discards_pending_algorithm() {
     let mut passes = 0;
     let output = ctx.run_ui(egui::RawInput::default(), |ui| {
         manager.ui(ui);
-        assert_eq!(manager.scene.algorithm(), Algorithm::Dop853);
+        assert_eq!(manager.scene.algorithm(), Some(Algorithm::Dop853));
         passes += 1;
         if passes == 1 {
             ui.ctx().request_discard("deferred algorithm selection");
@@ -163,16 +165,16 @@ fn algorithm_switch_is_deferred_and_scene_switch_discards_pending_algorithm() {
     output.drop_without_applying_deltas();
     assert!(passes >= 2);
     manager.advance(0.0);
-    assert_eq!(manager.scene.algorithm(), Algorithm::Rk4);
+    assert_eq!(manager.scene.algorithm(), Some(Algorithm::Rk4));
     manager.pending_algorithm = Some(Algorithm::VelocityVerlet);
     manager.pending = Some(2);
     manager.advance(60.0);
-    assert_eq!(manager.scene.algorithm(), Algorithm::Dop853);
+    assert_eq!(manager.scene.algorithm(), Some(Algorithm::Dop853));
     assert!(manager.pending_algorithm.is_none());
     assert!(!manager.is_running());
     manager.pending_algorithm = Some(Algorithm::VelocityVerlet);
     manager.advance(0.0);
-    assert_eq!(manager.scene.algorithm(), Algorithm::Dop853);
+    assert_eq!(manager.scene.algorithm(), Some(Algorithm::Dop853));
 }
 
 #[test]
@@ -205,7 +207,7 @@ fn all_algorithm_labels_fit_narrow_layouts_and_do_not_change_during_layout() {
                         SCENES[scene].id,
                         entry.id
                     );
-                    assert_eq!(manager.scene.algorithm(), entry.algorithm);
+                    assert_eq!(manager.scene.algorithm(), Some(entry.algorithm));
                 },
             );
             output.drop_without_applying_deltas();

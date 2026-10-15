@@ -10,7 +10,7 @@ Adaptive integration uses relative tolerance `1e-11`, absolute tolerance `1e-13`
 
 ## Run locally
 
-With Rust 1.97.1+ installed (the repository pins 1.98.1):
+With Rust 1.97.1+ installed (the repository pins 1.98.1) and Python 3.9+ available as `python`:
 
 ```sh
 rustup target add wasm32-unknown-unknown
@@ -23,6 +23,8 @@ Open <http://127.0.0.1:8080/>. Use `trunk build --release --locked` to generate 
 Bevy owns the window and render loop. A separate `Update` system advances DOP853 once per frame; egui layout and rendering only consume immutable display snapshots. Native desktop preview is also available with `cargo run`.
 
 Release builds use WebGPU-only browser rendering and wasm-opt for size optimization. Trunk automatically downloads the pinned Binaryen 133 tool.
+
+The startup overlay shows WASM download progress, then initialization status until the scene UI is ready. Loading errors offer a retry button. A Python standard-library post-build hook corrects Trunk 0.21.14's progress total to the final optimized WASM size, including when the server uses compression.
 
 The measured Bevy migration bundle is 15,038,672 bytes of WASM (5,016,041 bytes estimated with gzip-9). CI enforces an 18 MB raw WASM budget. Compression estimates are not a promise of actual server transfer size.
 

@@ -4,7 +4,7 @@
 
 ## 运行
 
-需要 Rust 1.97.1+、`wasm32-unknown-unknown` 目标，以及支持 WebGPU 的浏览器。使用 localhost 或 HTTPS，不能直接打开 HTML 文件。
+需要 Rust 1.97.1+、`wasm32-unknown-unknown` 目标、可通过 `python` 调用的 Python 3.9+，以及支持 WebGPU 的浏览器。使用 localhost 或 HTTPS，不能直接打开 HTML 文件。
 
 ```powershell
 rustup target add wasm32-unknown-unknown
@@ -28,6 +28,8 @@ trunk serve --release
 ```
 
 输出位于 `dist/`。Trunk 负责安装与 Cargo.lock 匹配的 wasm-bindgen 工具，以及 `Trunk.toml` 固定的 Binaryen 133。用户已确认引入 wasm-opt；release 构建使用 `-Oz`，清理符号名称和 producers 信息。开发构建不执行 wasm-opt。
+
+启动页面显示 WASM 下载百分比与已下载大小，随后显示初始化状态，场景界面就绪后隐藏；加载失败时显示错误与重试按钮。`loading.mjs` 接入 Trunk initializer。`scripts/fix-wasm-progress.py` 使用 Python 标准库，在 post_build 阶段将 Trunk 0.21.14 记录的优化前大小校正为最终 WASM 大小，保证压缩传输时的进度也正确。该脚本校验生成模板，Trunk 升级后若模板变化需同步调整。
 
 Bevy 关闭默认特性，仅启用窗口、输入、资源和渲染所需组件；WASM 只启用 WebGPU，不启用 WebGL、3D PBR、音频或 Bevy UI。参数界面由 bevy_egui 绘制，保留 egui 默认字体。Bevy 管理窗口、GPU 和渲染调度，定制 WGSL 通过 bevy_egui 绘制回调执行。原生目标支持 `cargo run`，也用于渲染集成测试。物理与调度测试本身不需要 GPU。
 

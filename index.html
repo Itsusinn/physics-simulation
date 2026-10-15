@@ -5,26 +5,58 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="theme-color" content="#080d17" />
     <title>Three Body · Orbital laboratory</title>
-    <link data-trunk rel="rust" data-wasm-opt="z" data-wasm-opt-params="--strip-debug --strip-producers" />
+    <link data-trunk rel="rust" data-initializer="loading.mjs" data-wasm-opt="z" data-wasm-opt-params="--strip-debug --strip-producers" />
     <style>
       html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background: #080d17; color: #dbe7f7; font-family: system-ui, sans-serif; }
       canvas { width: 100%; height: 100%; display: block; touch-action: none; }
-      #loading { position: absolute; inset: 0; display: grid; place-content: center; padding: 32px; text-align: center; pointer-events: none; }
+      #loading { position: absolute; inset: 0; display: grid; place-content: center; justify-items: center; padding: 24px; text-align: center; background: #080d17; }
       #loading h1 { font-size: 28px; font-weight: 500; letter-spacing: .12em; }
-      #loading p { max-width: 600px; color: #8b9bb3; line-height: 1.7; }
+      #loading p { max-width: 600px; color: #8b9bb3; line-height: 1.7; overflow-wrap: anywhere; }
+      #loading progress { width: min(320px, 100%); height: 6px; border: 0; border-radius: 3px; overflow: hidden; background: #1c2a3f; accent-color: #78baff; }
+      #loading progress::-webkit-progress-bar { background: #1c2a3f; border-radius: 3px; }
+      #loading progress::-webkit-progress-value { background: #78baff; border-radius: 3px; }
+      #loading progress::-moz-progress-bar { background: #78baff; border-radius: 3px; }
+      #loading progress:indeterminate { background: linear-gradient(90deg, #1c2a3f 25%, #78baff 50%, #1c2a3f 75%); background-size: 200% 100%; animation: loading-pulse 1.6s linear infinite; }
+      #loading progress:indeterminate::-webkit-progress-bar { background: transparent; }
+      #loading-detail { min-height: 1.7em; font-size: 13px; font-variant-numeric: tabular-nums; }
+      #loading button { padding: 9px 18px; border: 1px solid #49668c; border-radius: 6px; background: #17263b; color: #dbe7f7; font: inherit; cursor: pointer; }
+      #loading button:hover { background: #233a57; }
+      #loading button:focus-visible { outline: 2px solid #78baff; outline-offset: 3px; }
+      @keyframes loading-pulse { to { background-position: -200% 0; } }
+      @media (prefers-reduced-motion: reduce) { #loading progress:indeterminate { animation: none; } }
     </style>
   </head>
   <body>
     <canvas id="simulation" aria-label="Interactive three-body simulation"></canvas>
-    <div id="loading"><h1>THREE BODY</h1><p>Preparing the orbital laboratory…</p></div>
+    <div id="loading">
+      <h1>THREE BODY</h1>
+      <p id="loading-status" role="status">Preparing the orbital laboratory…</p>
+      <progress id="loading-progress" max="100" aria-label="WASM download progress" aria-describedby="loading-detail"></progress>
+      <p id="loading-detail">Connecting…</p>
+      <button id="loading-retry" type="button" hidden>Try again</button>
+      <noscript><p>Enable JavaScript to launch the orbital laboratory.</p></noscript>
+    </div>
     <script>
+      function showLoadingError(error) {
+        const loading = document.getElementById('loading');
+        loading.dataset.failed = 'true';
+        loading.style.display = 'grid';
+        document.getElementById('loading-status').textContent = 'Unable to start the orbital laboratory';
+        document.getElementById('loading-progress').hidden = true;
+        document.getElementById('loading-detail').textContent = `Application error: ${error?.message || error || 'Unknown error'}. Please try again.`;
+        document.getElementById('loading-retry').hidden = false;
+      }
+      document.getElementById('loading-retry').addEventListener('click', () => window.location.reload());
+      window.addEventListener('three-body-load-error', (event) => showLoadingError(event.detail));
       window.addEventListener('error', (event) => {
-        const loading = document.getElementById('loading');
-        if (loading) { loading.style.display = 'grid'; loading.textContent = `Application error: ${event.message}`; }
-      });
+        if (event.message) {
+          showLoadingError(event.error || event.message);
+        } else if (['SCRIPT', 'LINK'].includes(event.target?.tagName)) {
+          showLoadingError('Could not download an application file. Check your connection');
+        }
+      }, true);
       window.addEventListener('unhandledrejection', (event) => {
-        const loading = document.getElementById('loading');
-        if (loading) { loading.style.display = 'grid'; loading.textContent = `Application error: ${event.reason}`; }
+        showLoadingError(event.reason);
       });
     </script>
   </body>

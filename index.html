@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#080d17" />
+    <title>Three Body · Orbital laboratory</title>
+    <link data-trunk rel="rust" data-wasm-opt="0" />
+    <style>
+      html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background: #080d17; color: #dbe7f7; font-family: system-ui, sans-serif; }
+      canvas { width: 100%; height: 100%; display: block; touch-action: none; }
+      #loading { position: absolute; inset: 0; display: grid; place-content: center; padding: 32px; text-align: center; pointer-events: none; }
+      #loading h1 { font-size: 28px; font-weight: 500; letter-spacing: .12em; }
+      #loading p { max-width: 600px; color: #8b9bb3; line-height: 1.7; }
+    </style>
+  </head>
+  <body>
+    <canvas id="simulation" aria-label="Interactive three-body simulation"></canvas>
+    <div id="loading"><h1>THREE BODY</h1><p>Preparing the orbital laboratory…</p></div>
+    <script>
+      window.addEventListener('error', (event) => {
+        const loading = document.getElementById('loading');
+        if (loading) { loading.style.display = 'grid'; loading.textContent = `Application error: ${event.message}`; }
+      });
+      window.addEventListener('unhandledrejection', (event) => {
+        const loading = document.getElementById('loading');
+        if (loading) { loading.style.display = 'grid'; loading.textContent = `Application error: ${event.reason}`; }
+      });
+    </script>
+  </body>
+</html>

@@ -1,0 +1,66 @@
+name: Build WebGPU app
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      ref:
+        description: Exact three-body commit to build for the website
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      NO_COLOR: "true"
+      CARGO_INCREMENTAL: "0"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: Itsusinn/three-body
+          ref: ${{ inputs.ref || github.sha }}
+          persist-credentials: false
+      - name: Install pinned Rust toolchain
+        run: rustup show active-toolchain
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: three-body-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}-${{ hashFiles('src/**', 'Cargo.toml') }}
+          restore-keys: |
+            three-body-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}-
+      - name: Check formatting and WASM code
+        run: |
+          cargo fmt --check
+          cargo clippy --locked --target wasm32-unknown-unknown -- -D warnings
+      - name: Install Trunk
+        run: bash scripts/install-trunk.sh
+      - name: Build production bundle
+        run: |
+          trunk build --release --locked
+          python3 - <<'PY'
+          import json, pathlib, subprocess
+          root = pathlib.Path('dist')
+          assert (root / 'index.html').is_file()
+          assert list(root.glob('*.wasm')), 'Missing WASM bundle'
+          assert list(root.glob('*.js')), 'Missing JavaScript loader'
+          assert 'live_reload' not in (root / 'index.html').read_text()
+          sha = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
+          (root / 'version.json').write_text(json.dumps({'repository': 'Itsusinn/three-body', 'commit': sha}) + '\n')
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: three-body-web
+          path: dist/
+          if-no-files-found: error
+          retention-days: 14

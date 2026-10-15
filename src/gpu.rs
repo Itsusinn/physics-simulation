@@ -1,32 +1,35 @@
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
-use eframe::{egui, egui_wgpu, wgpu};
+use bevy::{
+    prelude::{Resource, World},
+    render::{
+        render_phase::TrackedRenderPass,
+        renderer::{RenderDevice, RenderQueue},
+        sync_world::RenderEntity,
+    },
+};
+use bevy_egui::{
+    egui,
+    render::{EguiBevyPaintCallbackImpl, EguiPipelineKey},
+};
 use wgpu::util::DeviceExt as _;
 
 use crate::{
-    model::{FrameParams, HISTORY, InitialConditions, STATE_BYTES, Snapshot},
-    simulation::Simulation,
+    model::{FrameParams, HISTORY, InitialConditions, STATE_BYTES},
+    runtime::DisplayFrame,
 };
 
-#[derive(Default)]
-pub struct Diagnostics {
-    pub snapshot: Snapshot,
-}
-
+#[derive(Resource)]
 pub struct Gpu {
     state: wgpu::Buffer,
     uniform: wgpu::Buffer,
     history: wgpu::Buffer,
-    simulation: Simulation,
-    history_next: u32,
-    history_count: u32,
     render_group: wgpu::BindGroup,
     background: wgpu::RenderPipeline,
     trails: wgpu::RenderPipeline,
     bodies: wgpu::RenderPipeline,
-    pub diagnostics: Arc<Mutex<Diagnostics>>,
-    last_frame: Option<u64>,
-    generation: Option<u64>,
+    uploaded_frame: Option<Arc<DisplayFrame>>,
+    format: wgpu::TextureFormat,
 }
 
 impl Gpu {
@@ -165,75 +168,25 @@ impl Gpu {
             state,
             uniform,
             history,
-            simulation: Simulation::new(InitialConditions::default(), 0).unwrap(),
-            history_next: 0,
-            history_count: 0,
             render_group,
             background: render("orbital grid", "background_vs", "background_fs"),
             trails: render("orbit trails", "trail_vs", "trail_fs"),
             bodies: render("glowing bodies", "body_vs", "body_fs"),
-            diagnostics: Arc::default(),
-            last_frame: None,
-            generation: None,
+            uploaded_frame: None,
+            format,
         }
     }
 
-    pub fn update(
-        &mut self,
-        queue: &wgpu::Queue,
-        params: &FrameParams,
-        reset: Option<&InitialConditions>,
-        generation: u64,
-    ) {
-        if let Some(initial) = reset {
-            match Simulation::new(initial.clone(), generation) {
-                Ok(simulation) => self.simulation = simulation,
-                Err(error) => {
-                    self.diagnostics.lock().unwrap().snapshot = Snapshot {
-                        generation,
-                        flags: 4,
-                        error: Some(error.into()),
-                        ..Default::default()
-                    };
-                    return;
-                }
-            }
-            self.generation = Some(generation);
-            self.history_next = 0;
-            self.history_count = 0;
-            self.sample_history(queue);
+    pub fn upload(&mut self, queue: &wgpu::Queue, params: &FrameParams, frame: &Arc<DisplayFrame>) {
+        // Scene re-entry starts a fresh laboratory whose revisions can repeat.
+        if self.uploaded_frame.as_ref().is_none_or(|previous| {
+            previous.revision != frame.revision || !Arc::ptr_eq(previous, frame)
+        }) {
+            queue.write_buffer(&self.state, 0, &frame.state);
+            queue.write_buffer(&self.history, 0, &frame.history);
+            self.uploaded_frame = Some(frame.clone());
         }
-        let before = self.simulation.snapshot.time;
-        self.simulation.advance(params);
-        if self.simulation.snapshot.time > before {
-            self.sample_history(queue);
-        }
-        queue.write_buffer(
-            &self.state,
-            0,
-            &self
-                .simulation
-                .state
-                .render_bytes(self.history_next, self.history_count),
-        );
-        queue.write_buffer(&self.uniform, 0, &params.bytes());
-        self.diagnostics.lock().unwrap().snapshot = self.simulation.snapshot.clone();
-    }
-
-    fn sample_history(&mut self, queue: &wgpu::Queue) {
-        for (i, body) in self.simulation.state.bodies.iter().enumerate() {
-            let mut bytes = Vec::with_capacity(16);
-            for value in [body.position[0] as f32, body.position[1] as f32, 0.0, 0.0] {
-                bytes.extend_from_slice(&value.to_le_bytes());
-            }
-            queue.write_buffer(
-                &self.history,
-                (i as u64 * u64::from(HISTORY) + u64::from(self.history_next)) * 16,
-                &bytes,
-            );
-        }
-        self.history_next = (self.history_next + 1) % HISTORY;
-        self.history_count = (self.history_count + 1).min(HISTORY);
+        queue.write_buffer(&self.uniform, 0, &params.bytes(self.format.is_srgb()));
     }
 
     pub fn paint(&self, pass: &mut wgpu::RenderPass<'_>) {
@@ -247,40 +200,42 @@ impl Gpu {
     }
 }
 
-pub struct SimulationCallback {
+pub struct OrbitCallback {
     pub params: FrameParams,
-    pub initial: InitialConditions,
-    pub generation: u64,
-    pub frame_id: u64,
+    pub frame: Arc<DisplayFrame>,
 }
 
-impl egui_wgpu::CallbackTrait for SimulationCallback {
-    fn prepare(
-        &self,
-        _device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        _screen: &egui_wgpu::ScreenDescriptor,
-        _encoder: &mut wgpu::CommandEncoder,
-        resources: &mut egui_wgpu::CallbackResources,
-    ) -> Vec<wgpu::CommandBuffer> {
-        let gpu: &mut Gpu = resources.get_mut().unwrap();
-        // Only a painted callback advances physics. Repeated preparation of the
-        // same egui frame must not advance time or append duplicate trail samples.
-        if gpu.last_frame != Some(self.frame_id) || gpu.generation != Some(self.generation) {
-            let reset = (gpu.generation != Some(self.generation)).then_some(&self.initial);
-            gpu.update(queue, &self.params, reset, self.generation);
-            gpu.last_frame = Some(self.frame_id);
-        }
-        Vec::new()
-    }
-
-    fn paint(
+impl EguiBevyPaintCallbackImpl for OrbitCallback {
+    fn update(
         &self,
         _info: egui::PaintCallbackInfo,
-        pass: &mut wgpu::RenderPass<'static>,
-        resources: &egui_wgpu::CallbackResources,
+        _entity: RenderEntity,
+        key: EguiPipelineKey,
+        world: &mut World,
     ) {
-        resources.get::<Gpu>().unwrap().paint(pass);
+        if world
+            .get_resource::<Gpu>()
+            .is_none_or(|gpu| gpu.format != key.target_format)
+        {
+            let device = world.resource::<RenderDevice>();
+            world.insert_resource(Gpu::new(device.wgpu_device(), key.target_format));
+        }
+        world.resource_scope(|world, mut gpu: bevy::prelude::Mut<Gpu>| {
+            gpu.upload(world.resource::<RenderQueue>(), &self.params, &self.frame);
+        });
+    }
+
+    fn render<'pass>(
+        &self,
+        _info: egui::PaintCallbackInfo,
+        pass: &mut TrackedRenderPass<'pass>,
+        _entity: RenderEntity,
+        _key: EguiPipelineKey,
+        world: &'pass World,
+    ) {
+        if let Some(gpu) = world.get_resource::<Gpu>() {
+            gpu.paint(pass.wgpu_pass());
+        }
     }
 }
 

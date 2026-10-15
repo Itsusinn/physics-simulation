@@ -152,7 +152,7 @@ impl Default for FrameParams {
 }
 
 impl FrameParams {
-    pub fn bytes(&self) -> Vec<u8> {
+    pub fn bytes(&self, srgb_target: bool) -> Vec<u8> {
         let mut bytes = Vec::with_capacity(48);
         for value in [
             self.center[0],
@@ -166,7 +166,12 @@ impl FrameParams {
         ] {
             bytes.extend_from_slice(&value.to_le_bytes());
         }
-        for value in [self.trail_length, u32::from(self.grid), 0, 0] {
+        for value in [
+            self.trail_length,
+            u32::from(self.grid),
+            u32::from(srgb_target),
+            0,
+        ] {
             bytes.extend_from_slice(&value.to_le_bytes());
         }
         bytes
@@ -196,7 +201,7 @@ mod tests {
             );
         }
         assert_eq!(initial.render_bytes(0, 0).len(), STATE_BYTES as usize);
-        assert_eq!(FrameParams::default().bytes().len(), 48);
+        assert_eq!(FrameParams::default().bytes(false).len(), 48);
     }
 
     #[test]

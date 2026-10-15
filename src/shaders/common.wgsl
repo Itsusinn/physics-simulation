@@ -11,6 +11,6 @@ struct State {
 struct Params {
     camera: vec4<f32>, // center xy, half height, aspect ratio
     display: vec4<f32>, // viewport width/height, trail opacity, body size
-    controls: vec4<u32>, // trail length, grid, reserved, reserved
+    controls: vec4<u32>, // trail length, grid, sRGB target, reserved
 }
 const HISTORY: u32 = 4096u;

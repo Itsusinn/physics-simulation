@@ -1,49 +1,66 @@
-#[cfg(target_arch = "wasm32")]
 mod app;
-#[cfg(any(target_arch = "wasm32", test))]
 mod gpu;
-#[cfg(any(target_arch = "wasm32", test))]
 mod model;
-#[cfg(any(target_arch = "wasm32", test))]
+mod runtime;
+mod scenes;
 mod simulation;
 
-#[cfg(target_arch = "wasm32")]
+use bevy::{
+    prelude::*,
+    render::{
+        RenderPlugin,
+        settings::{RenderCreation, WgpuSettings},
+    },
+    winit::{UpdateMode, WinitSettings},
+};
+use bevy_egui::{EguiPlugin, EguiPrimaryContextPass};
+
 fn main() {
-    use wasm_bindgen::JsCast as _;
-    wasm_bindgen_futures::spawn_local(async {
-        let document = web_sys::window().unwrap().document().unwrap();
-        let canvas = document
-            .get_element_by_id("simulation")
-            .unwrap()
-            .dyn_into::<web_sys::HtmlCanvasElement>()
-            .unwrap();
-        let mut options = eframe::WebOptions::default();
-        options.wgpu_options.wgpu_setup =
-            eframe::egui_wgpu::WgpuSetup::CreateNew(eframe::egui_wgpu::WgpuSetupCreateNew {
-                instance_descriptor: eframe::wgpu::InstanceDescriptor {
-                    backends: eframe::wgpu::Backends::BROWSER_WEBGPU,
-                    ..eframe::wgpu::InstanceDescriptor::new_without_display_handle()
-                },
-                ..eframe::egui_wgpu::WgpuSetupCreateNew::without_display_handle()
-            });
-        let result = eframe::WebRunner::new()
-            .start(
-                canvas,
-                options,
-                Box::new(|cc| Ok(Box::new(app::ThreeBodyApp::new(cc)?))),
-            )
-            .await;
-        let loading = document.get_element_by_id("loading").unwrap();
-        match result {
-            Ok(()) => { let _ = loading.set_attribute("style", "display:none"); }
-            Err(error) => loading.set_text_content(Some(&format!(
-                "WebGPU could not start: {error:?}. Open this page on localhost or HTTPS in a browser with WebGPU enabled."
-            ))),
-        }
-    });
+    let mut settings = WgpuSettings::default();
+    #[cfg(target_arch = "wasm32")]
+    {
+        settings.backends = Some(wgpu::Backends::BROWSER_WEBGPU);
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        settings.backends = Some(wgpu::Backends::PRIMARY);
+    }
+    App::new()
+        .add_plugins(
+            DefaultPlugins
+                .set(WindowPlugin {
+                    primary_window: Some(Window {
+                        title: "Three Body - Orbital laboratory".into(),
+                        canvas: Some("#simulation".into()),
+                        fit_canvas_to_parent: true,
+                        prevent_default_event_handling: true,
+                        resolution: (1280, 800).into(),
+                        ..default()
+                    }),
+                    ..default()
+                })
+                .set(RenderPlugin {
+                    render_creation: RenderCreation::Automatic(Box::new(settings)),
+                    ..default()
+                }),
+        )
+        .add_plugins(EguiPlugin::default())
+        .init_resource::<scenes::SceneManager>()
+        .add_systems(Startup, |mut commands: Commands| {
+            commands.spawn((Camera2d, Msaa::Off));
+        })
+        .add_systems(Update, scenes::advance_scene)
+        .add_systems(EguiPrimaryContextPass, scenes::draw_ui)
+        .add_systems(
+            PostUpdate,
+            update_loop_mode.after(bevy_egui::EguiPostUpdateSet::EndPass),
+        )
+        .run();
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-fn main() {
-    eprintln!("This application runs in your browser. Start it with: trunk serve --release");
+fn update_loop_mode(scenes: Res<scenes::SceneManager>, mut settings: ResMut<WinitSettings>) {
+    let interval = std::time::Duration::from_millis(if scenes.is_running() { 16 } else { 100 });
+    let mode = UpdateMode::reactive_low_power(interval);
+    settings.focused_mode = mode;
+    settings.unfocused_mode = mode;
 }

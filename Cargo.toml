@@ -2,27 +2,28 @@
 name = "three-body"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.95"
+rust-version = "1.97.1"
 description = "Interactive Pythagorean three-body laboratory powered by WebGPU"
 license = "MIT OR Apache-2.0"
 
 [dependencies]
-eframe = { version = "=0.36.2", default-features = false, features = ["default_fonts", "wgpu_no_default_features"] }
+bevy = { version = "=0.20.0", default-features = false, features = ["std", "async_executor", "bevy_asset", "bevy_log", "bevy_winit", "bevy_render", "bevy_core_pipeline", "bevy_camera", "bevy_shader", "keyboard", "mouse", "touch"] }
+bevy_egui = { version = "=0.43.1", default-features = false, features = ["default_fonts", "render"] }
+wgpu = { version = "=30.0.1", default-features = false, features = ["wgsl"] }
 ode_solvers = "=0.6.2"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-# Enable only WebGPU: egui-wgpu's defaults also pull in WebGL and its shader compiler.
+# Browser rendering uses WebGPU only.
+bevy = { version = "=0.20.0", default-features = false, features = ["webgpu"] }
 wgpu = { version = "=30.0.1", default-features = false, features = ["webgpu", "fragile-send-sync-non-atomic-wasm"] }
-wasm-bindgen = "0.2"
-wasm-bindgen-futures = "0.4"
-web-sys = { version = "0.3", features = ["Window", "Document", "Element", "HtmlCanvasElement", "Navigator"] }
+web-sys = { version = "0.3", features = ["Window", "Document", "Element"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-# Keep native backends available for the GPU integration tests.
-eframe = { version = "=0.36.2", default-features = false, features = ["wgpu"] }
+# Native application and offscreen rendering tests.
+bevy = { version = "=0.20.0", default-features = false, features = ["x11", "multi_threaded"] }
 
 [profile.release]
-# Measured smaller than "z" for this egui/wgpu application.
+# Keep size-oriented optimization; measure changes against the Bevy baseline.
 opt-level = "s"
 lto = "fat"
 codegen-units = 1

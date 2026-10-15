@@ -1,13 +1,15 @@
-use std::{
-    collections::VecDeque,
-    sync::{Arc, Mutex},
-};
+use std::{collections::VecDeque, sync::Arc};
 
-use eframe::egui::{self, Color32, FontId, RichText, Stroke, Vec2};
+use bevy::prelude::Resource;
+use bevy_egui::render::EguiBevyPaintCallback;
+
+use bevy_egui::egui::{self, Color32, FontId, RichText, Stroke, Vec2};
 
 use crate::{
-    gpu::{Diagnostics, Gpu, SimulationCallback},
+    gpu::OrbitCallback,
     model::{FrameParams, InitialConditions, Snapshot},
+    runtime::DisplayFrame,
+    simulation::Simulation,
 };
 
 const MUTED: Color32 = Color32::from_rgb(130, 151, 177);
@@ -18,16 +20,16 @@ const COLORS: [Color32; 3] = [
     Color32::from_rgb(199, 153, 255),
 ];
 
+#[derive(Resource)]
 pub struct ThreeBodyApp {
-    active: InitialConditions,
+    pub(crate) active: InitialConditions,
     draft: InitialConditions,
-    params: FrameParams,
-    diagnostics: Arc<Mutex<Diagnostics>>,
+    pub(crate) params: FrameParams,
     snapshot: Snapshot,
-    generation: u64,
-    running: bool,
-    step: bool,
-    speed: f32,
+    pub(crate) generation: u64,
+    pub(crate) running: bool,
+    pub(crate) step: bool,
+    pub(crate) speed: f32,
     follow: bool,
     show_controls: bool,
     validation_error: Option<String>,
@@ -38,65 +40,8 @@ pub struct ThreeBodyApp {
 }
 
 impl ThreeBodyApp {
-    pub fn new(
-        cc: &eframe::CreationContext<'_>,
-    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
-        let render = cc
-            .wgpu_render_state
-            .as_ref()
-            .ok_or("WebGPU renderer unavailable")?;
-        let gpu = Gpu::new(&render.device, render.target_format);
-        let diagnostics = gpu.diagnostics.clone();
-        render.renderer.write().callback_resources.insert(gpu);
-        let ctx = &cc.egui_ctx;
-        ctx.set_theme(egui::Theme::Dark);
-        ctx.global_style_mut(|style| {
-            style.visuals.panel_fill = Color32::from_rgb(13, 20, 32);
-            style.visuals.window_fill = Color32::from_rgb(17, 26, 40);
-            style.visuals.extreme_bg_color = Color32::from_rgb(8, 14, 24);
-            style.visuals.faint_bg_color = Color32::from_rgb(20, 31, 46);
-            style.visuals.selection.bg_fill = Color32::from_rgb(28, 81, 83);
-            style.visuals.selection.stroke = Stroke::new(1.0, ACCENT);
-            style.visuals.widgets.inactive.bg_fill = Color32::from_rgb(24, 37, 54);
-            style.visuals.widgets.hovered.bg_fill = Color32::from_rgb(35, 55, 73);
-            style.visuals.widgets.active.bg_fill = Color32::from_rgb(35, 82, 86);
-            style.visuals.widgets.noninteractive.bg_stroke =
-                Stroke::new(1.0, Color32::from_rgb(33, 46, 64));
-            style.spacing.item_spacing = Vec2::new(10.0, 9.0);
-            style.spacing.button_padding = Vec2::new(12.0, 7.0);
-            style.spacing.slider_width = 150.0;
-            style
-                .text_styles
-                .insert(egui::TextStyle::Body, FontId::proportional(14.0));
-            style
-                .text_styles
-                .insert(egui::TextStyle::Button, FontId::proportional(14.0));
-            style
-                .text_styles
-                .insert(egui::TextStyle::Heading, FontId::proportional(23.0));
-        });
-        Ok(Self {
-            active: InitialConditions::default(),
-            draft: InitialConditions::default(),
-            params: FrameParams::default(),
-            diagnostics,
-            snapshot: Snapshot::default(),
-            generation: 0,
-            running: false,
-            step: false,
-            speed: 1.0,
-            follow: false,
-            show_controls: true,
-            validation_error: None,
-            energy_history: VecDeque::new(),
-            last_sample_time: -1.0,
-            fps: 60.0,
-            view_initialized: false,
-        })
-    }
-
     fn restart(&mut self, initial: InitialConditions) {
-        if let Err(error) = initial.validate() {
+        if let Err(error) = Simulation::new(initial.clone(), self.generation + 1) {
             self.validation_error = Some(error.into());
             return;
         }
@@ -110,8 +55,7 @@ impl ThreeBodyApp {
         self.validation_error = None;
     }
 
-    fn read_diagnostics(&mut self) {
-        let latest = self.diagnostics.lock().unwrap().snapshot.clone();
+    pub(crate) fn read_diagnostics(&mut self, latest: Snapshot) {
         if latest.generation != self.generation {
             return;
         }
@@ -357,7 +301,7 @@ impl ThreeBodyApp {
             });
     }
 
-    fn viewport(&mut self, ui: &mut egui::Ui) {
+    fn viewport(&mut self, ui: &mut egui::Ui, frame: Arc<DisplayFrame>) {
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE)
             .show(ui, |ui| {
@@ -391,26 +335,13 @@ impl ThreeBodyApp {
                 if self.follow {
                     self.fit_view(0.12);
                 }
-                let frame_dt = ui.input(|i| i.unstable_dt).clamp(0.0, 0.05);
-                self.params.duration = if !self.snapshot.ready {
-                    0.0
-                } else if self.step {
-                    self.params.max_step
-                } else if self.running {
-                    f64::from(frame_dt) * f64::from(self.speed)
-                } else {
-                    0.0
-                };
-                ui.painter()
-                    .add(eframe::egui_wgpu::Callback::new_paint_callback(
-                        rect,
-                        SimulationCallback {
-                            params: self.params.clone(),
-                            initial: self.active.clone(),
-                            generation: self.generation,
-                            frame_id: ui.ctx().cumulative_frame_nr(),
-                        },
-                    ));
+                ui.painter().add(EguiBevyPaintCallback::new_paint_callback(
+                    rect,
+                    OrbitCallback {
+                        params: self.params.clone(),
+                        frame,
+                    },
+                ));
                 let painter = ui.painter();
                 let status = if self.running { "RUNNING" } else { "PAUSED" };
                 painter.text(
@@ -487,15 +418,14 @@ impl ThreeBodyApp {
     }
 }
 
-impl eframe::App for ThreeBodyApp {
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        self.read_diagnostics();
+impl ThreeBodyApp {
+    pub(crate) fn ui(&mut self, ui: &mut egui::Ui, frame: Arc<DisplayFrame>) {
         if !self.view_initialized && ui.available_width() < 760.0 {
             self.show_controls = false;
         }
         let dt = ui.input(|i| i.unstable_dt).max(0.001);
         self.fps = self.fps * 0.95 + 0.05 / dt;
-        if !ui.ctx().egui_wants_keyboard_input() {
+        if ui.ctx().current_pass_index() == 0 && !ui.ctx().egui_wants_keyboard_input() {
             if ui.input(|i| i.key_pressed(egui::Key::Space)) {
                 self.running = !self.running;
             }
@@ -508,7 +438,7 @@ impl eframe::App for ThreeBodyApp {
             self.controls(ui);
         }
         self.footer(ui);
-        self.viewport(ui);
+        self.viewport(ui, frame);
         ui.ctx()
             .request_repaint_after(std::time::Duration::from_millis(if self.running {
                 16
@@ -526,4 +456,80 @@ fn section(ui: &mut egui::Ui, number: &str, title: &str) {
         ui.label(RichText::new(number).monospace().small().color(ACCENT));
         ui.label(RichText::new(title).strong());
     });
+}
+
+impl Default for ThreeBodyApp {
+    fn default() -> Self {
+        Self {
+            active: InitialConditions::default(),
+            draft: InitialConditions::default(),
+            params: FrameParams::default(),
+            snapshot: Snapshot::default(),
+            generation: 0,
+            running: false,
+            step: false,
+            speed: 1.0,
+            follow: false,
+            show_controls: true,
+            validation_error: None,
+            energy_history: VecDeque::new(),
+            last_sample_time: -1.0,
+            fps: 60.0,
+            view_initialized: false,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::runtime::Laboratory;
+
+    #[test]
+    fn repeated_egui_layout_does_not_toggle_shortcuts_twice_or_advance_physics() {
+        let ctx = egui::Context::default();
+        crate::scenes::configure_style(&ctx);
+        let mut ui_state = ThreeBodyApp::default();
+        let lab = Laboratory::default();
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                Vec2::new(1000.0, 800.0),
+            )),
+            events: vec![egui::Event::Key {
+                key: egui::Key::Space,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+            ..Default::default()
+        };
+        let mut passes = 0;
+        let output = ctx.run_ui(input, |ui| {
+            ui_state.ui(ui, lab.frame.clone());
+            passes += 1;
+            if passes == 1 {
+                ui.ctx().request_discard("exercise repeated layout");
+            }
+        });
+        assert!(passes >= 2);
+        assert!(ui_state.running);
+        assert_eq!(lab.simulation.snapshot.time, 0.0);
+        assert_eq!(lab.frame.revision, 1);
+        assert!(!output.shapes.is_empty());
+        output.drop_without_applying_deltas();
+    }
+
+    #[test]
+    fn restart_rejects_invalid_state_without_replacing_active_conditions() {
+        let mut app = ThreeBodyApp::default();
+        let original = app.active.clone();
+        let mut invalid = original.clone();
+        invalid.bodies[0].position[0] = f64::MAX;
+        app.restart(invalid);
+        assert!(app.validation_error.is_some());
+        assert_eq!(app.generation, 0);
+        assert_eq!(app.active, original);
+    }
 }

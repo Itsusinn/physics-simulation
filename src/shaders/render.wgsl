@@ -7,6 +7,15 @@ struct Vertex {
     @location(0) uv: vec2<f32>,
     @location(1) color: vec4<f32>,
 }
+// Palette values were authored in sRGB. Bevy's sRGB attachment performs the
+// final encoding, so feed it linear RGB to avoid brightening the whole scene.
+fn output_color(color: vec4<f32>) -> vec4<f32> {
+    if (params.controls.z == 0u) { return color; }
+    let linear = select(color.rgb / 12.92,
+        pow((color.rgb + vec3<f32>(0.055)) / 1.055, vec3<f32>(2.4)),
+        color.rgb > vec3<f32>(0.04045));
+    return vec4<f32>(linear, color.a);
+}
 fn palette(i: u32) -> vec3<f32> {
     return array<vec3<f32>, 3>(vec3<f32>(0.30, 0.77, 1.0), vec3<f32>(1.0, 0.65, 0.27), vec3<f32>(0.78, 0.57, 1.0))[i];
 }
@@ -40,7 +49,7 @@ fn background_fs(v: Vertex) -> @location(0) vec4<f32> {
     if (params.controls.y != 0u) {
         color += vec3<f32>(0.035, 0.055, 0.08) * grid + vec3<f32>(0.04, 0.07, 0.09) * axis;
     }
-    return vec4<f32>(color, 1.0);
+    return output_color(vec4<f32>(color, 1.0));
 }
 @vertex
 fn body_vs(@builtin(vertex_index) index: u32, @builtin(instance_index) body: u32) -> Vertex {
@@ -55,7 +64,7 @@ fn body_fs(v: Vertex) -> @location(0) vec4<f32> {
     let core = 1.0 - smoothstep(0.19, 0.27, r);
     let halo = exp(-r * r * 7.0) * 0.55;
     let ring = (1.0 - smoothstep(0.012, 0.03, abs(r - 0.44))) * 0.25;
-    return vec4<f32>(mix(v.color.rgb, vec3<f32>(0.96), core * 0.75), max(core, halo + ring) * (1.0 - smoothstep(0.8, 1.0, r)));
+    return output_color(vec4<f32>(mix(v.color.rgb, vec3<f32>(0.96), core * 0.75), max(core, halo + ring) * (1.0 - smoothstep(0.8, 1.0, r))));
 }
 @vertex
 fn trail_vs(@builtin(vertex_index) index: u32, @builtin(instance_index) instance: u32) -> Vertex {
@@ -78,5 +87,5 @@ fn trail_vs(@builtin(vertex_index) index: u32, @builtin(instance_index) instance
 }
 @fragment
 fn trail_fs(v: Vertex) -> @location(0) vec4<f32> {
-    return vec4<f32>(v.color.rgb, v.color.a * (1.0 - smoothstep(0.35, 1.0, abs(v.uv.y))));
+    return output_color(vec4<f32>(v.color.rgb, v.color.a * (1.0 - smoothstep(0.35, 1.0, abs(v.uv.y)))));
 }

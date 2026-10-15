@@ -1,5 +1,6 @@
 //! Application shell and scene lifecycle. Register new scenes in SCENES;
 //! each factory owns its UI, simulation and display state independently.
+mod mechanics;
 mod style;
 mod three_body;
 mod three_d;
@@ -29,6 +30,18 @@ pub const SCENES: &[SceneDefinition] = &[
     SceneDefinition {
         id: "3d-threebody",
         create: three_d::create,
+    },
+    SceneDefinition {
+        id: "2d-double-pendulum",
+        create: mechanics::double_pendulum,
+    },
+    SceneDefinition {
+        id: "1d-coupled-springs",
+        create: mechanics::coupled_springs,
+    },
+    SceneDefinition {
+        id: "2d-kepler-orbit",
+        create: mechanics::kepler_orbit,
     },
 ];
 

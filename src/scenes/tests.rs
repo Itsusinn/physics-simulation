@@ -126,7 +126,7 @@ fn registered_scenes_can_switch_both_directions() {
     assert_eq!(manager.definitions[1].id, "3d-threebody");
     let ctx = egui::Context::default();
     configure_style(&ctx);
-    for index in [1, 0, 1] {
+    for index in (0..SCENES.len()).chain((0..SCENES.len()).rev()) {
         manager.pending = Some(index);
         manager.advance(60.0);
         assert_eq!(manager.active, index);

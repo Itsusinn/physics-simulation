@@ -1,4 +1,6 @@
-use ode_solvers::{Dop853, OutputType, SVector, System, dop_shared::IntegrationError};
+use ode_solvers::{SVector, System, dop_shared::IntegrationError};
+
+use crate::integrators::{self, Algorithm, Request};
 
 use crate::model::FrameParams;
 
@@ -15,6 +17,14 @@ pub enum Kind {
 }
 
 impl Kind {
+    pub fn scene_id(self) -> &'static str {
+        match self {
+            Self::DoublePendulum => "2d-double-pendulum",
+            Self::CoupledSprings => "1d-coupled-springs",
+            Self::KeplerOrbit => "2d-kepler-orbit",
+        }
+    }
+
     pub fn title(self) -> &'static str {
         match self {
             Self::DoublePendulum => "Double pendulum",
@@ -245,6 +255,7 @@ pub struct Simulation {
     pub limited: bool,
     pub steps: usize,
     next_step: f64,
+    last_algorithm: Algorithm,
 }
 
 impl Simulation {
@@ -267,6 +278,7 @@ impl Simulation {
             limited: false,
             steps: 0,
             next_step: 0.0,
+            last_algorithm: Algorithm::default(),
         })
     }
 
@@ -275,15 +287,20 @@ impl Simulation {
     }
 
     fn advance_with_budget(&mut self, duration: f64, params: &FrameParams, budget: u32) {
+        if !params.algorithm.supports(self.model.kind.scene_id()) {
+            self.error = Some("Algorithm does not support this scene.".into());
+            return;
+        }
+        if self.last_algorithm != params.algorithm {
+            self.next_step = 0.0;
+            self.last_algorithm = params.algorithm;
+        }
         self.steps = 0;
         self.limited = false;
         if self.error.is_some() || duration == 0.0 {
             return;
         }
-        if [duration, params.max_step, params.rtol, params.atol]
-            .into_iter()
-            .any(|v| !v.is_finite() || v <= 0.0)
-        {
+        if !params.valid_integration_inputs(duration) {
             self.error = Some("Duration, step and tolerances must be finite and positive.".into());
             return;
         }
@@ -292,26 +309,20 @@ impl Simulation {
             self.error = Some("Time cannot advance at f64 precision. Reset to recover.".into());
             return;
         }
-        let mut solver = Dop853::from_param(
+        let output = integrators::integrate(
             self.model.clone(),
-            self.time,
-            end,
-            duration,
             self.state,
-            params.rtol,
-            params.atol,
-            0.9,
-            0.0,
-            0.333,
-            6.0,
-            params.max_step.min(duration),
-            self.next_step.min(params.max_step).min(duration),
-            budget,
-            1000,
-            OutputType::Sparse,
+            Request {
+                params,
+                start: self.time,
+                duration,
+                next_step: self.next_step,
+                budget,
+                position_dimensions: (self.model.kind != Kind::DoublePendulum).then_some(2),
+            },
         );
-        let result = solver.integrate();
-        for (&time, y) in solver.x_out().iter().zip(solver.y_out()).skip(1) {
+        for (time, y) in &output.samples {
+            let time = *time;
             if !time.is_finite() || time <= self.time || !self.model.valid_state(y) {
                 self.error = Some("Numerical boundary reached (Kepler r <= 1e-6 or state out of range). Reset to recover.".into());
                 return;
@@ -321,12 +332,14 @@ impl Simulation {
             self.state = *y;
             self.steps += 1;
         }
-        match result {
+        match output.result {
             Ok(_) if self.time >= end => {}
             Err(IntegrationError::MaxNumStepReached { .. }) if self.steps > 0 => {
                 self.limited = true
             }
-            Err(error) => self.error = Some(format!("DOP853 stopped: {error}. Reset to recover.")),
+            Err(error) => {
+                self.error = Some(format!("Integrator stopped: {error}. Reset to recover."))
+            }
             Ok(_) => {
                 self.error =
                     Some("Integration stopped before the requested time. Reset to recover.".into())

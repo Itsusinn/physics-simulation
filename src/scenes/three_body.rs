@@ -17,6 +17,17 @@ pub(super) fn create() -> Box<dyn Scene> {
 }
 
 impl Scene for ThreeBodyScene {
+    fn algorithm(&self) -> crate::integrators::Algorithm {
+        self.app.params.algorithm
+    }
+
+    fn set_algorithm(
+        &mut self,
+        algorithm: crate::integrators::Algorithm,
+    ) -> Result<(), &'static str> {
+        self.app.params.set_algorithm(algorithm, "2d-345-threebody")
+    }
+
     fn advance(&mut self, delta_seconds: f64) {
         advance_simulation(delta_seconds, &mut self.lab, &mut self.app);
     }

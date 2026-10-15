@@ -89,9 +89,7 @@ impl Mechanics {
                     ui.separator();
                     ui.add(egui::Slider::new(&mut self.speed, 0.05..=10.0).logarithmic(true).text("Speed"));
                     ui.add(egui::Slider::new(&mut self.params.max_step, 0.00001..=0.1).logarithmic(true).text("Max dt"));
-                    ui.add(egui::Slider::new(&mut self.params.rtol, 1e-13..=1e-6).logarithmic(true).custom_formatter(|v, _| format!("{v:.0e}")).text("Rel. tol"));
-                    ui.add(egui::Slider::new(&mut self.params.atol, 1e-15..=1e-8).logarithmic(true).custom_formatter(|v, _| format!("{v:.0e}")).text("Abs. tol"));
-                    ui.small("Tolerances control local error, not global accuracy.");
+                    crate::integrators::precision_controls(ui, &mut self.params);
                     ui.separator();
                     ui.strong("Presets");
                     for (index, name) in kind.presets().iter().enumerate() {
@@ -402,6 +400,18 @@ fn spring(painter: &egui::Painter, start: Pos2, end: Pos2) {
 }
 
 impl Scene for Mechanics {
+    fn algorithm(&self) -> crate::integrators::Algorithm {
+        self.params.algorithm
+    }
+
+    fn set_algorithm(
+        &mut self,
+        algorithm: crate::integrators::Algorithm,
+    ) -> Result<(), &'static str> {
+        self.params
+            .set_algorithm(algorithm, self.simulation.model.kind.scene_id())
+    }
+
     fn advance(&mut self, delta_seconds: f64) {
         if let Some(model) = self.pending_reset.take() {
             self.simulation = Simulation::new(model).expect("validated pending reset");

@@ -1,4 +1,6 @@
-use ode_solvers::{Dop853, OutputType, SVector, System, dop_shared::IntegrationError};
+use ode_solvers::{SVector, System, dop_shared::IntegrationError};
+
+use crate::integrators::{self, Algorithm, Request};
 
 use crate::model::{FrameParams, InitialConditions, Snapshot};
 
@@ -37,6 +39,7 @@ pub struct Simulation {
     pub state: InitialConditions,
     pub snapshot: Snapshot,
     next_step: f64,
+    last_algorithm: Algorithm,
 }
 
 impl Simulation {
@@ -57,10 +60,19 @@ impl Simulation {
             state: initial,
             snapshot,
             next_step: 0.0,
+            last_algorithm: Algorithm::default(),
         })
     }
 
     pub fn advance(&mut self, params: &FrameParams) {
+        if !params.algorithm.supports("2d-345-threebody") {
+            self.fail("Algorithm does not support this scene.");
+            return;
+        }
+        if self.last_algorithm != params.algorithm {
+            self.next_step = 0.0;
+            self.last_algorithm = params.algorithm;
+        }
         if self.snapshot.error.is_some() {
             return;
         }
@@ -70,10 +82,7 @@ impl Simulation {
         if params.duration == 0.0 {
             return;
         }
-        if [params.duration, params.max_step, params.rtol, params.atol]
-            .into_iter()
-            .any(|v| !v.is_finite() || v <= 0.0)
-        {
+        if !params.valid_integration_inputs(params.duration) {
             self.fail("Duration, Max dt and tolerances must be finite and positive.");
             return;
         }
@@ -83,32 +92,26 @@ impl Simulation {
             self.fail("Time cannot advance at f64 precision. Reset the simulation.");
             return;
         }
-        let mut solver = Dop853::from_param(
+        let output = integrators::integrate(
             Gravity(&self.state),
-            start,
-            end,
-            params.duration,
             vector(&self.state),
-            params.rtol,
-            params.atol,
-            0.9,
-            0.0,
-            0.333,
-            6.0,
-            params.max_step.min(params.duration),
-            self.next_step.min(params.max_step).min(params.duration),
-            MAX_ATTEMPTS,
-            1000,
-            OutputType::Sparse,
+            Request {
+                params,
+                start,
+                duration: params.duration,
+                next_step: self.next_step,
+                budget: MAX_ATTEMPTS,
+                position_dimensions: Some(2),
+            },
         );
-        let result = solver.integrate();
         // Sparse output includes the initial state and every accepted step, even
         // when the attempt budget is exhausted. Never install a rejected stage.
         let mut last = self.snapshot.clone();
         let mut candidate = self.state.clone();
         let mut min_step = f64::INFINITY;
         let mut failed = false;
-        for (&time, y) in solver.x_out().iter().zip(solver.y_out()).skip(1) {
+        for (time, y) in &output.samples {
+            let time = *time;
             let mut next = candidate.clone();
             for i in 0..3 {
                 next.bodies[i].position = [y[4 * i], y[4 * i + 1]];
@@ -143,17 +146,17 @@ impl Simulation {
         if failed {
             self.fail("Integration left the numerical or display range. Reset the simulation.");
         } else {
-            match result {
+            match output.result {
                 Ok(_) if self.snapshot.time >= end => {}
-                Ok(_) => self.fail("DOP853 stopped before reaching the requested time."),
+                Ok(_) => self.fail("Integrator stopped before reaching the requested time."),
                 Err(IntegrationError::MaxNumStepReached { .. }) if self.snapshot.time == start => {
-                    self.fail("DOP853 could not accept a step within the work budget. Reset the simulation.");
+                    self.fail("Integrator could not accept a step within the work budget. Reset the simulation.");
                 }
                 Err(IntegrationError::MaxNumStepReached { .. }) => {
                     // Drop uncomputed frame time; do not increase dt to catch up.
                     self.snapshot.flags |= 2;
                 }
-                Err(error) => self.fail(&format!("DOP853 stopped: {error}")),
+                Err(error) => self.fail(&format!("Integrator stopped: {error}")),
             }
         }
     }

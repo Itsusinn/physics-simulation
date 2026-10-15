@@ -207,3 +207,52 @@ fn validation_budget_and_numerical_failure_preserve_valid_state() {
     assert!(sim.snapshot.error.is_some());
     assert_eq!(sim.snapshot.time, 1e30);
 }
+
+#[test]
+fn selectable_algorithms_match_independent_reference_and_reject_bad_states() {
+    let initial = InitialConditions::default();
+    let reference = rk4(&initial, 1.0, 10_000);
+    for entry in crate::integrators::ALGORITHMS {
+        let mut sim = Simulation::new(initial.clone(), 0).unwrap();
+        for _ in 0..20 {
+            sim.advance(&FrameParams {
+                algorithm: entry.algorithm,
+                duration: 0.05,
+                max_step: 0.001,
+                ..Default::default()
+            });
+            assert!(
+                sim.snapshot.error.is_none(),
+                "{}: {:?}",
+                entry.id,
+                sim.snapshot.error
+            );
+        }
+        let tolerance = if entry.algorithm == Algorithm::VelocityVerlet {
+            3e-6
+        } else {
+            1e-9
+        };
+        for (body, expected) in sim.state.bodies.iter().zip(reference) {
+            for (actual, expected) in body.position.into_iter().chain(body.velocity).zip(expected) {
+                assert!(
+                    (actual - expected).abs() < tolerance,
+                    "{}: {}",
+                    entry.id,
+                    (actual - expected).abs()
+                );
+            }
+        }
+        let state = sim.state.clone();
+        let time = sim.snapshot.time;
+        sim.advance(&FrameParams {
+            algorithm: entry.algorithm,
+            duration: 1.0,
+            max_step: f64::NAN,
+            ..Default::default()
+        });
+        assert!(sim.snapshot.error.is_some());
+        assert_eq!(sim.state, state);
+        assert_eq!(sim.snapshot.time, time);
+    }
+}

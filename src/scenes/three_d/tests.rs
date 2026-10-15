@@ -112,3 +112,34 @@ fn orbit_camera_fits_bodies_at_narrow_and_wide_aspect_ratios() {
         }
     }
 }
+
+#[test]
+fn hot_swap_preserves_spatial_state_history_and_reset_selection() {
+    let mut scene = ThreeBody3d::default();
+    scene.running = true;
+    scene.advance(0.05);
+    scene.draft.bodies[0].position[2] += 0.1;
+    for entry in crate::integrators::ALGORITHMS {
+        let state = scene.simulation.state.clone();
+        let time = scene.simulation.snapshot.time;
+        let energy = scene.simulation.snapshot.initial_energy;
+        let history = scene.history.clone();
+        let draft = scene.draft.clone();
+        scene.set_algorithm(entry.algorithm).unwrap();
+        scene.advance(0.0);
+        assert_eq!(scene.simulation.state, state);
+        assert_eq!(scene.simulation.snapshot.time, time);
+        assert_eq!(scene.simulation.snapshot.initial_energy, energy);
+        assert_eq!(scene.history, history);
+        assert_eq!(scene.draft, draft);
+        assert!(scene.running);
+        scene.advance(0.01);
+        assert!(scene.simulation.snapshot.time > time);
+        assert!(scene.simulation.snapshot.error.is_none());
+    }
+    let algorithm = scene.algorithm();
+    scene.restart(scene.active.clone());
+    scene.advance(0.0);
+    assert_eq!(scene.algorithm(), algorithm);
+    assert_eq!(scene.simulation.snapshot.time, 0.0);
+}

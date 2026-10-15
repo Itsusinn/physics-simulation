@@ -1,5 +1,6 @@
 mod app;
 mod gpu;
+mod integrators;
 mod model;
 mod runtime;
 mod scenes;

@@ -120,6 +120,7 @@ impl Snapshot {
 
 #[derive(Clone)]
 pub struct FrameParams {
+    pub algorithm: crate::integrators::Algorithm,
     pub max_step: f64,
     pub duration: f64,
     pub center: [f32; 2],
@@ -136,6 +137,7 @@ pub struct FrameParams {
 impl Default for FrameParams {
     fn default() -> Self {
         Self {
+            algorithm: crate::integrators::Algorithm::default(),
             max_step: 0.05,
             duration: 0.0,
             center: [0.0; 2],
@@ -152,6 +154,28 @@ impl Default for FrameParams {
 }
 
 impl FrameParams {
+    pub fn valid_integration_inputs(&self, duration: f64) -> bool {
+        [duration, self.max_step]
+            .into_iter()
+            .all(|v| v.is_finite() && v > 0.0)
+            && (!self.algorithm.definition().adaptive
+                || [self.rtol, self.atol]
+                    .into_iter()
+                    .all(|v| v.is_finite() && v > 0.0))
+    }
+
+    pub fn set_algorithm(
+        &mut self,
+        algorithm: crate::integrators::Algorithm,
+        scene: &str,
+    ) -> Result<(), &'static str> {
+        if !algorithm.supports(scene) {
+            return Err("Algorithm does not support this scene.");
+        }
+        self.algorithm = algorithm;
+        Ok(())
+    }
+
     pub fn bytes(&self, srgb_target: bool) -> Vec<u8> {
         let mut bytes = Vec::with_capacity(48);
         for value in [

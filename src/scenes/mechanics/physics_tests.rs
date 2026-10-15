@@ -173,3 +173,67 @@ fn work_limit_keeps_accepted_progress_and_invalid_time_preserves_state() {
     assert!(sim.error.is_some());
     assert_eq!(sim.state, sim.model.initial);
 }
+
+#[test]
+fn selectable_algorithms_match_spring_modes_and_kepler_period() {
+    for entry in crate::integrators::ALGORITHMS {
+        let params = FrameParams {
+            algorithm: entry.algorithm,
+            max_step: 0.001,
+            ..Default::default()
+        };
+        let tolerance = if entry.algorithm == Algorithm::VelocityVerlet {
+            1e-5
+        } else {
+            1e-8
+        };
+        let mut springs = Simulation::new(Model::preset(Kind::CoupledSprings, 2)).unwrap();
+        integrate(&mut springs, 10.0, 0.05, &params);
+        let omega = 1.5_f64.sqrt();
+        let q = (omega * 10.0).cos();
+        let v = -omega * (omega * 10.0).sin();
+        assert!(
+            (springs.state - State::from([q, -q, v, -v])).amax() < tolerance,
+            "{}",
+            entry.id
+        );
+        let mut orbit = Simulation::new(Model::preset(Kind::KeplerOrbit, 1)).unwrap();
+        integrate(&mut orbit, std::f64::consts::TAU, 0.05, &params);
+        assert!(
+            (orbit.state - orbit.model.initial).amax() < tolerance,
+            "{}",
+            entry.id
+        );
+        if entry.algorithm != Algorithm::VelocityVerlet {
+            let model = Model::preset(Kind::DoublePendulum, 0);
+            let mut reference = model.initial;
+            let h = 0.0001;
+            for _ in 0..10000 {
+                let k1 = pendulum_rhs(&model, reference);
+                let k2 = pendulum_rhs(&model, reference + k1 * (h / 2.0));
+                let k3 = pendulum_rhs(&model, reference + k2 * (h / 2.0));
+                let k4 = pendulum_rhs(&model, reference + k3 * h);
+                reference += (k1 + k2 * 2.0 + k3 * 2.0 + k4) * (h / 6.0);
+            }
+            let mut pendulum = Simulation::new(model).unwrap();
+            integrate(&mut pendulum, 1.0, 0.05, &params);
+            assert!((pendulum.state - reference).amax() < 1e-8, "{}", entry.id);
+        }
+    }
+}
+
+#[test]
+fn unsupported_algorithm_is_rejected_before_physics_changes() {
+    let mut sim = Simulation::new(Model::preset(Kind::DoublePendulum, 0)).unwrap();
+    let state = sim.state;
+    sim.advance(
+        0.05,
+        &FrameParams {
+            algorithm: Algorithm::VelocityVerlet,
+            ..Default::default()
+        },
+    );
+    assert_eq!(sim.state, state);
+    assert_eq!(sim.time, 0.0);
+    assert!(sim.error.as_ref().unwrap().contains("does not support"));
+}

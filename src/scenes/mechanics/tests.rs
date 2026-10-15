@@ -116,3 +116,52 @@ fn ui_tessellates_at_narrow_and_wide_sizes_without_advancing_physics() {
         }
     }
 }
+
+#[test]
+fn hot_swap_preserves_state_history_draft_and_running_status() {
+    for kind in KINDS {
+        let mut scene = Mechanics::new(kind);
+        scene.running = true;
+        scene.advance(0.05);
+        scene.draft.initial[0] += 0.1;
+        for entry in crate::integrators::ALGORITHMS {
+            let state = scene.simulation.state;
+            let time = scene.simulation.time;
+            let history = scene.history.clone();
+            let draft = scene.draft.clone();
+            let energy = scene.simulation.initial_energy;
+            let before_algorithm = scene.algorithm();
+            let result = scene.set_algorithm(entry.algorithm);
+            if !entry.algorithm.supports(kind.scene_id()) {
+                assert!(result.is_err());
+                assert_eq!(scene.algorithm(), before_algorithm);
+                continue;
+            }
+            result.unwrap();
+            scene.advance(0.0);
+            assert_eq!(scene.simulation.state, state);
+            assert_eq!(scene.simulation.time, time);
+            assert_eq!(scene.history, history);
+            assert_eq!(scene.draft, draft);
+            assert_eq!(scene.simulation.initial_energy, energy);
+            assert!(scene.running);
+            scene.advance(0.01);
+            assert!(scene.simulation.time > time);
+            assert!(scene.simulation.error.is_none());
+            scene.running = false;
+            scene.set_algorithm(entry.algorithm).unwrap();
+            scene.advance(60.0);
+            assert_eq!(scene.history.len(), history.len() + 1);
+            scene.running = true;
+        }
+        let algorithm = scene.algorithm();
+        scene.restart(scene.simulation.model.clone());
+        scene.advance(0.0);
+        assert_eq!(scene.algorithm(), algorithm);
+        assert_eq!(scene.simulation.time, 0.0);
+        scene.step = true;
+        scene.advance(0.0);
+        assert!(scene.simulation.time > 0.0);
+        assert!(scene.simulation.error.is_none());
+    }
+}

@@ -128,10 +128,7 @@ impl ThreeBodyApp {
                     section(ui, "01", "Time & precision");
                     ui.add(egui::Slider::new(&mut self.speed, 0.05..=10.0).logarithmic(true).text("Speed"));
                     ui.add(egui::Slider::new(&mut self.params.max_step, 0.00001..=0.1).logarithmic(true).max_decimals(5).text("Max dt"));
-                    ui.add(egui::Slider::new(&mut self.params.rtol, 1e-13..=1e-6).logarithmic(true).custom_formatter(|v, _| format!("{v:.0e}")).text("Rel. tol"));
-                    ui.add(egui::Slider::new(&mut self.params.atol, 1e-15..=1e-8).logarithmic(true).custom_formatter(|v, _| format!("{v:.0e}")).text("Abs. tol"));
-                    ui.label(RichText::new("Smaller tolerances request smaller local error; they do not guarantee global accuracy.").small().color(MUTED));
-                    ui.label(RichText::new("DOP853 · f64 · adaptive error control").small().color(MUTED));
+                    crate::integrators::precision_controls(ui, &mut self.params);
                     ui.label(RichText::new(format!("Smallest dt  {:.2e}", self.snapshot.min_step)).small().color(MUTED));
 
                     section(ui, "02", "Initial conditions");

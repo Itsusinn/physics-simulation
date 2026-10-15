@@ -155,3 +155,37 @@ fn integration_failure_stops_run_and_reset_recovers() {
             > 0.0
     );
 }
+
+#[test]
+fn hot_swap_preserves_planar_state_history_and_reset_selection() {
+    let mut lab = Laboratory::default();
+    let mut ui = ThreeBodyApp::default();
+    ui.running = true;
+    advance_simulation(0.05, &mut lab, &mut ui);
+    for entry in crate::integrators::ALGORITHMS {
+        let state = lab.simulation.state.clone();
+        let time = lab.simulation.snapshot.time;
+        let energy = lab.simulation.snapshot.initial_energy;
+        let frame = lab.frame.clone();
+        ui.params
+            .set_algorithm(entry.algorithm, "2d-345-threebody")
+            .unwrap();
+        advance_simulation(0.0, &mut lab, &mut ui);
+        assert_eq!(lab.simulation.state, state);
+        assert_eq!(lab.simulation.snapshot.time, time);
+        assert_eq!(lab.simulation.snapshot.initial_energy, energy);
+        assert!(Arc::ptr_eq(&frame, &lab.frame));
+        assert!(ui.running);
+        advance_simulation(0.01, &mut lab, &mut ui);
+        assert!(lab.simulation.snapshot.time > time);
+        assert!(lab.simulation.snapshot.error.is_none());
+    }
+    ui.generation += 1;
+    ui.running = false;
+    advance_simulation(0.0, &mut lab, &mut ui);
+    assert_eq!(lab.simulation.snapshot.time, 0.0);
+    assert_eq!(
+        ui.params.algorithm,
+        crate::integrators::Algorithm::VelocityVerlet
+    );
+}

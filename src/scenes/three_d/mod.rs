@@ -84,7 +84,7 @@ impl ThreeBody3d {
                 ui.spacing_mut().slider_width = (ui.available_width() - 175.0).clamp(45.0, 115.0);
                 egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                     ui.heading("Spatial three-body system");
-                    ui.label("DOP853 · f64 · 3 dimensions");
+                    ui.label("f64 · 3 dimensions");
                     ui.horizontal(|ui| {
                         if ui.button(if self.running { "Pause" } else { "Run" }).clicked() { self.running = !self.running; }
                         if ui.add_enabled(!self.running, egui::Button::new("Step")).clicked() { self.step = true; }
@@ -94,9 +94,7 @@ impl ThreeBody3d {
                     ui.separator();
                     ui.add(egui::Slider::new(&mut self.speed, 0.05..=10.0).logarithmic(true).text("Speed"));
                     ui.add(egui::Slider::new(&mut self.params.max_step, 0.00001..=0.1).logarithmic(true).text("Max dt"));
-                    ui.add(egui::Slider::new(&mut self.params.rtol, 1e-13..=1e-6).logarithmic(true).custom_formatter(|v, _| format!("{v:.0e}")).text("Rel. tol"));
-                    ui.add(egui::Slider::new(&mut self.params.atol, 1e-15..=1e-8).logarithmic(true).custom_formatter(|v, _| format!("{v:.0e}")).text("Abs. tol"));
-                    ui.small("Tolerances control local error, not global accuracy.");
+                    crate::integrators::precision_controls(ui, &mut self.params);
                     ui.separator();
                     ui.strong("Initial conditions");
                     ui.small("Changes take effect on Apply.");
@@ -236,6 +234,17 @@ impl ThreeBody3d {
 }
 
 impl Scene for ThreeBody3d {
+    fn algorithm(&self) -> crate::integrators::Algorithm {
+        self.params.algorithm
+    }
+
+    fn set_algorithm(
+        &mut self,
+        algorithm: crate::integrators::Algorithm,
+    ) -> Result<(), &'static str> {
+        self.params.set_algorithm(algorithm, "3d-threebody")
+    }
+
     fn advance(&mut self, delta_seconds: f64) {
         if let Some(initial) = self.pending_reset.take() {
             self.simulation =

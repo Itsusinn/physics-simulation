@@ -6,6 +6,12 @@ static EVENTS: Mutex<Vec<(&str, f64)>> = Mutex::new(Vec::new());
 struct ProbeScene;
 
 impl Scene for ProbeScene {
+    fn algorithm(&self) -> Algorithm {
+        Algorithm::Dop853
+    }
+    fn set_algorithm(&mut self, _: Algorithm) -> Result<(), &'static str> {
+        Ok(())
+    }
     fn advance(&mut self, delta_seconds: f64) {
         EVENTS.lock().unwrap().push(("advance", delta_seconds));
     }
@@ -29,10 +35,12 @@ fn probe() -> Box<dyn Scene> {
 static TEST_SCENES: &[SceneDefinition] = &[
     SceneDefinition {
         id: "2d-345-threebody",
+        recommended_algorithms: &[Algorithm::Dop853],
         create: three_body::create,
     },
     SceneDefinition {
         id: "test-only-scene",
+        recommended_algorithms: &[],
         create: probe,
     },
 ];
@@ -134,5 +142,73 @@ fn registered_scenes_can_switch_both_directions() {
         let output = ctx.run_ui(egui::RawInput::default(), |ui| manager.ui(ui));
         assert!(!output.shapes.is_empty());
         output.drop_without_applying_deltas();
+    }
+}
+
+#[test]
+fn algorithm_switch_is_deferred_and_scene_switch_discards_pending_algorithm() {
+    let mut manager = SceneManager::default();
+    let ctx = egui::Context::default();
+    configure_style(&ctx);
+    manager.pending_algorithm = Some(Algorithm::Rk4);
+    let mut passes = 0;
+    let output = ctx.run_ui(egui::RawInput::default(), |ui| {
+        manager.ui(ui);
+        assert_eq!(manager.scene.algorithm(), Algorithm::Dop853);
+        passes += 1;
+        if passes == 1 {
+            ui.ctx().request_discard("deferred algorithm selection");
+        }
+    });
+    output.drop_without_applying_deltas();
+    assert!(passes >= 2);
+    manager.advance(0.0);
+    assert_eq!(manager.scene.algorithm(), Algorithm::Rk4);
+    manager.pending_algorithm = Some(Algorithm::VelocityVerlet);
+    manager.pending = Some(2);
+    manager.advance(60.0);
+    assert_eq!(manager.scene.algorithm(), Algorithm::Dop853);
+    assert!(manager.pending_algorithm.is_none());
+    assert!(!manager.is_running());
+    manager.pending_algorithm = Some(Algorithm::VelocityVerlet);
+    manager.advance(0.0);
+    assert_eq!(manager.scene.algorithm(), Algorithm::Dop853);
+}
+
+#[test]
+fn all_algorithm_labels_fit_narrow_layouts_and_do_not_change_during_layout() {
+    for scene in 0..SCENES.len() {
+        for entry in ALGORITHMS
+            .iter()
+            .filter(|entry| entry.algorithm.supports(SCENES[scene].id))
+        {
+            let mut manager = SceneManager::default();
+            manager.pending = Some(scene);
+            manager.advance(0.0);
+            manager.pending_algorithm = Some(entry.algorithm);
+            manager.advance(0.0);
+            let ctx = egui::Context::default();
+            configure_style(&ctx);
+            let output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(360.0, 800.0),
+                    )),
+                    ..Default::default()
+                },
+                |ui| {
+                    manager.ui(ui);
+                    assert!(
+                        ui.min_rect().width() <= 360.0,
+                        "{} / {}",
+                        SCENES[scene].id,
+                        entry.id
+                    );
+                    assert_eq!(manager.scene.algorithm(), entry.algorithm);
+                },
+            );
+            output.drop_without_applying_deltas();
+        }
     }
 }

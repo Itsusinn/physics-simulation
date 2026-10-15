@@ -80,7 +80,7 @@ jobs:
           GH_TOKEN: ${{ secrets.WEBSITE_DEPLOY_TOKEN }}
         run: |
           if [[ -z "$GH_TOKEN" ]]; then
-            echo '::error::Set WEBSITE_DEPLOY_TOKEN to a fine-grained PAT scoped to Itsusinn/itsusinn.github.io with Actions: write. See README.md.'
+            echo '::error::Set WEBSITE_DEPLOY_TOKEN to a fine-grained PAT scoped to Itsusinn/itsusinn.github.io with Actions: write. See AGENTS.md.'
             exit 1
           fi
           gh workflow run deploy.yml --repo Itsusinn/itsusinn.github.io --ref master

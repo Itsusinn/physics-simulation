@@ -77,7 +77,7 @@ impl Blocks {
 
     fn controls(&mut self, ui: &mut egui::Ui) {
         ui.heading("Sliding blocks");
-        ui.label("A heavy block hits a stationary light block. The light block bounces between it and the wall.");
+        ui.label("The right block hits the stationary left block, which can bounce against the wall. Set each mass independently.");
         ui.small("Horizontal motion only. No friction or gravity. Consistent arbitrary units.");
         ui.separator();
         ui.spacing_mut().slider_width = (ui.available_width() - 150.0).clamp(40.0, 110.0);
@@ -94,9 +94,9 @@ impl Blocks {
         egui::Grid::new("block-inputs")
             .num_columns(2)
             .show(ui, |ui| {
-                for (index, label) in ["Small mass", "Large mass"].iter().enumerate() {
+                for (index, label) in ["Left mass", "Right mass"].iter().enumerate() {
                     ui.label(*label);
-                    ui.add(egui::DragValue::new(&mut self.draft.masses[index]).range(1..=100));
+                    ui.add(egui::DragValue::new(&mut self.draft.masses[index]).speed(0.1));
                     ui.end_row();
                 }
                 ui.label("Incoming speed");
@@ -114,6 +114,7 @@ impl Blocks {
                 );
                 ui.end_row();
             });
+        ui.small("Masses must be positive; decimals are allowed. Double-click a value to type it.");
         ui.small("Restitution 1: elastic; 0: no rebound. Small block starts at rest, large block moves left.");
         if ui
             .add_enabled(

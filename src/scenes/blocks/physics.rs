@@ -12,9 +12,8 @@ pub const START_X: [f64; 2] = [2.0, 5.0];
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Settings {
-    // Avian stores Mass as f32 even in f64 mode. Integer masses in this
-    // range are exactly representable; diagnostics use the same applied mass.
-    pub masses: [u32; 2],
+    // Keep editable inputs in f64; Avian applies masses in f32 even in f64 mode.
+    pub masses: [f64; 2],
     pub incoming_speed: f64,
     pub restitution: f64,
 }
@@ -22,7 +21,7 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            masses: [1, 100],
+            masses: [1.0, 100.0],
             incoming_speed: 1.0,
             restitution: 1.0,
         }
@@ -31,8 +30,14 @@ impl Default for Settings {
 
 impl Settings {
     pub fn validate(&self) -> Result<(), &'static str> {
-        if self.masses.iter().any(|&m| !(1..=100).contains(&m)) {
-            return Err("Masses must be whole numbers from 1 to 100.");
+        if self.masses.iter().any(|&m| !m.is_finite() || m <= 0.0) {
+            return Err("Masses must be finite positive numbers.");
+        }
+        if self.masses.iter().any(|&m| {
+            let applied = m as f32;
+            !applied.is_normal() || !applied.recip().is_normal()
+        }) {
+            return Err("Mass is too small or too large for the collision solver.");
         }
         if !self.incoming_speed.is_finite() || !(0.1..=3.0).contains(&self.incoming_speed) {
             return Err("Incoming speed must be from 0.1 to 3.");
@@ -41,6 +46,10 @@ impl Settings {
             return Err("Restitution must be from 0 to 1.");
         }
         Ok(())
+    }
+
+    fn applied_masses(&self) -> [f64; 2] {
+        self.masses.map(|mass| f64::from(mass as f32))
     }
 }
 
@@ -119,7 +128,7 @@ impl Simulation {
             .init_resource::<Time<Real>>()
             .init_resource::<Counts>()
             .insert_resource(Gravity::ZERO)
-            // Resolve simultaneous wall/block contacts across a 100:1 mass ratio.
+            // Improve resolution of simultaneous wall/block contacts.
             .insert_resource(SubstepCount(8))
             .insert_resource(SolverConfig {
                 restitution_threshold: 0.0,
@@ -191,7 +200,7 @@ impl Simulation {
         });
         // Initialize collider/mass components without advancing simulation time.
         world.run_schedule(AdvanceBlocks);
-        let kinetic = 0.5 * f64::from(settings.masses[1]) * initial_velocity.powi(2);
+        let kinetic = 0.5 * settings.applied_masses()[1] * initial_velocity.powi(2);
         Ok(Self {
             world,
             bodies,
@@ -228,13 +237,17 @@ impl Simulation {
                     .x,
             )
         });
-        let kinetic = (0..2)
-            .map(|i| 0.5 * f64::from(self.settings.masses[i]) * velocity[i].powi(2))
+        let kinetic = self
+            .settings
+            .applied_masses()
+            .into_iter()
+            .zip(velocity)
+            .map(|(mass, speed)| 0.5 * mass * speed.powi(2))
             .sum::<f64>();
         if x.iter()
             .chain(velocity.iter())
-            .chain([&kinetic])
             .any(|v| !v.is_finite() || v.abs() > 1e12)
+            || !kinetic.is_finite()
             || x[0] < SIZES[0] * 0.5 - 0.02
             || x[1] - x[0] < (SIZES[0] + SIZES[1]) * 0.5 - 0.02
         {
@@ -280,8 +293,54 @@ mod tests {
     use super::*;
 
     #[test]
+    fn invalid_masses_are_rejected_for_either_block() {
+        for mass in [
+            0.0,
+            -1.0,
+            f64::NAN,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            1e-50,
+            1e50,
+            1e-38,
+            1e38,
+        ] {
+            for index in 0..2 {
+                let mut settings = Settings::default();
+                settings.masses[index] = mass;
+                assert!(Simulation::new(settings).is_err(), "mass {mass} at {index}");
+            }
+        }
+    }
+
+    #[test]
+    fn kinetic_energy_uses_applied_masses_without_a_display_position_limit() {
+        for mass in [0.1, 1e13] {
+            let mut simulation = Simulation::new(Settings {
+                masses: [mass, mass],
+                ..Default::default()
+            })
+            .unwrap();
+            let expected = 0.5 * f64::from(mass as f32);
+            assert_eq!(simulation.initial_energy, expected);
+            assert_eq!(simulation.snapshot.kinetic, expected);
+            simulation.tick();
+            assert!(simulation.error.is_none(), "{:?}", simulation.error);
+            assert_eq!(simulation.snapshot.kinetic, expected);
+            assert_eq!(simulation.snapshot.time, DT);
+        }
+    }
+
+    #[test]
     fn first_impact_matches_one_dimensional_impulse_equations() {
-        for masses in [[1, 1], [1, 100], [100, 1]] {
+        for masses in [
+            [1.0, 1.0],
+            [1.0, 100.0],
+            [100.0, 1.0],
+            [0.25, 2.5],
+            [2500.5, 125.25],
+            [0.1, 0.3],
+        ] {
             for restitution in [0.0, 0.5, 1.0] {
                 let settings = Settings {
                     masses,
@@ -303,7 +362,7 @@ mod tests {
                 }
                 assert!(simulation.error.is_none(), "{:?}", simulation.error);
                 assert_eq!(simulation.snapshot.collisions, [1, 0]);
-                let [m, big] = masses.map(f64::from);
+                let [m, big] = simulation.settings.applied_masses();
                 let expected = [
                     -(1.0 + restitution) * big * 3.0 / (m + big),
                     -(big - restitution * m) * 3.0 / (m + big),
@@ -316,7 +375,7 @@ mod tests {
                 }
                 let momentum =
                     m * simulation.snapshot.velocity[0] + big * simulation.snapshot.velocity[1];
-                assert!((momentum + big * 3.0).abs() < 1e-3);
+                assert!((momentum + big * 3.0).abs() < big * 3.0 * 1e-5);
                 assert!(simulation.snapshot.kinetic <= simulation.initial_energy * (1.0 + 1e-5));
             }
         }

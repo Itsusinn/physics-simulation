@@ -10,11 +10,11 @@ fn pause_step_reset_drafts_budget_and_error_recovery() {
     scene.advance(60.0);
     assert_eq!(scene.simulation.snapshot.time, 0.05);
     assert!(!scene.running);
-    scene.draft.masses[1] = 10;
+    scene.draft.masses = [0.25, 2500.5];
     scene.running = true;
     scene.advance(60.0);
     assert_eq!(scene.simulation.snapshot.time, 0.1);
-    assert_eq!(scene.simulation.settings.masses[1], 100);
+    assert_eq!(scene.simulation.settings.masses, [1.0, 100.0]);
     scene.speed = 10.0;
     scene.advance(60.0);
     assert!(scene.budget_limited);
@@ -26,7 +26,7 @@ fn pause_step_reset_drafts_budget_and_error_recovery() {
     assert_eq!(scene.simulation.snapshot, before, "reset is deferred");
     scene.advance(60.0);
     assert_eq!(scene.simulation.snapshot.time, 0.0);
-    assert_eq!(scene.simulation.settings.masses[1], 10);
+    assert_eq!(scene.simulation.settings.masses, [0.25, 2500.5]);
     assert_eq!(scene.simulation.snapshot.collisions, [0; 2]);
     assert_eq!(scene.simulation.snapshot.total_collisions(), 0);
     assert!(!scene.running);
@@ -37,6 +37,7 @@ fn pause_step_reset_drafts_budget_and_error_recovery() {
     scene.restart(scene.simulation.settings.clone());
     scene.advance(0.05);
     assert!(scene.simulation.error.is_none());
+    assert_eq!(scene.simulation.settings.masses, [0.25, 2500.5]);
     assert!(scene.set_algorithm(Algorithm::Dop853).is_err());
     assert_eq!(scene.algorithm(), None);
 }
@@ -58,6 +59,17 @@ fn invalid_drafts_are_isolated_and_substeps_accumulate() {
     assert!(scene.running);
     scene.advance(f64::INFINITY);
     assert_eq!(scene.simulation.snapshot, before);
+    scene.draft.restitution = 1.0;
+    for index in 0..2 {
+        scene.draft.masses = [0.25, 2500.5];
+        scene.draft.masses[index] = 0.0;
+        scene.restart(scene.draft.clone());
+        assert!(scene.validation_error.is_some());
+        assert!(scene.pending_reset.is_none());
+        assert_eq!(scene.simulation.snapshot, before);
+        assert_eq!(scene.simulation.settings.masses, [1.0, 100.0]);
+        assert!(scene.running);
+    }
 }
 
 #[test]

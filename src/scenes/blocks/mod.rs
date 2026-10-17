@@ -1,18 +1,18 @@
-//! A scene-owned Avian world, advanced only by the application's Update.
+//! Scene-owned event-driven f64 collision physics, advanced only during Update.
 mod physics;
 
 use super::Scene;
 use crate::integrators::Algorithm;
 use bevy_egui::egui::{self, Color32, Pos2, Stroke};
-use physics::{DT, SIZES, Settings, Simulation};
+use physics::{SIZES, Settings, Simulation};
 
 pub(super) const SOLVER: super::FixedSolver = super::FixedSolver {
-    name: "Avian 2D · collision solver",
-    description: "Fixed 0.001 s timestep. Resolves rigid-body contacts; ODE integrators are unavailable in this scene.",
+    name: "Event-driven · f64 impacts",
+    description: "Analytic contact times and Newton restitution in f64. Ideal frictionless 1D rigid blocks; no fixed collision timestep. ODE integrators are unavailable in this scene.",
     supported_scenes: &["2d-block-collisions"],
 };
 
-const MAX_STEPS: usize = 256;
+const MAX_IMPACTS: usize = 2048;
 const COLORS: [Color32; 2] = [
     Color32::from_rgb(104, 218, 207),
     Color32::from_rgb(255, 182, 105),
@@ -30,7 +30,6 @@ struct Blocks {
     running: bool,
     step: bool,
     speed: f64,
-    remainder: f64,
     steps: usize,
     budget_limited: bool,
     show_controls: bool,
@@ -51,7 +50,6 @@ impl Blocks {
             running: false,
             step: false,
             speed: 1.0,
-            remainder: 0.0,
             steps: 0,
             budget_limited: false,
             show_controls: true,
@@ -86,8 +84,8 @@ impl Blocks {
                 .logarithmic(true)
                 .text("Speed"),
         );
-        ui.small("Fixed physics step: 0.001 s");
-        ui.small("Avian: f64 positions; f32 velocities and contact solver.");
+        ui.small("Event-driven analytic impacts; all physics uses f64.");
+        ui.small("Ideal rigid bodies with instantaneous contact; no material deformation.");
         ui.separator();
         ui.strong("Initial conditions");
         ui.small("Edits take effect on Apply & restart.");
@@ -147,11 +145,17 @@ impl Blocks {
         ui.monospace(format!("Small vx  {:+.6}", s.velocity[0]));
         ui.monospace(format!("Large vx  {:+.6}", s.velocity[1]));
         ui.monospace(format!("Kinetic   {:.6}", s.kinetic));
+        ui.monospace(format!("Dissipated {:.6}", s.dissipated));
         ui.monospace(format!(
             "ΔK / K₀   {:+.3e}",
             (s.kinetic - self.simulation.initial_energy) / self.simulation.initial_energy
         ));
-        ui.small("Counts mark new contacts. Kinetic energy can decrease when restitution < 1. Numerical drift is shown even for elastic collisions.");
+        ui.monospace(format!(
+            "Residual  {:+.3e}",
+            (s.kinetic + s.dissipated - self.simulation.initial_energy)
+                / self.simulation.initial_energy
+        ));
+        ui.small("Residual = (kinetic + dissipated − initial energy) / initial energy. Impacts are counted once; persistent contact adds no counts. The fixed wall exchanges momentum with the blocks.");
     }
 
     fn view(&mut self, ui: &mut egui::Ui) {
@@ -289,7 +293,7 @@ impl Scene for Blocks {
         None
     }
     fn set_algorithm(&mut self, _: Algorithm) -> Result<(), &'static str> {
-        Err("This scene uses Avian's collision solver.")
+        Err("This scene uses event-driven analytic impacts.")
     }
     fn is_running(&self) -> bool {
         self.running
@@ -302,7 +306,6 @@ impl Scene for Blocks {
             self.simulation = Simulation::new(settings).expect("validated block settings");
             self.running = false;
             self.step = false;
-            self.remainder = 0.0;
             self.fit = true;
             return;
         }
@@ -319,17 +322,11 @@ impl Scene for Blocks {
         } else {
             return;
         };
-        self.remainder += duration;
-        let requested = ((self.remainder + DT * 1e-9) / DT).floor() as usize;
-        self.budget_limited = requested > MAX_STEPS;
-        self.remainder = (self.remainder - requested as f64 * DT).max(0.0);
-        for _ in 0..requested.min(MAX_STEPS) {
-            self.simulation.tick();
-            if self.simulation.error.is_some() {
-                self.running = false;
-                break;
-            }
-            self.steps += 1;
+        let result = self.simulation.advance(duration, MAX_IMPACTS);
+        self.steps = result.impacts;
+        self.budget_limited = result.budget_limited;
+        if self.simulation.error.is_some() {
+            self.running = false;
         }
     }
 
@@ -387,7 +384,7 @@ impl Scene for Blocks {
                 );
             } else {
                 ui.label(format!(
-                    "{} · {} physics steps · Space: run / pause · R: reset",
+                    "{} · {} impacts this frame · Space: run / pause · R: reset",
                     if self.running { "Running" } else { "Paused" },
                     self.steps
                 ));

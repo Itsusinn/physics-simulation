@@ -15,10 +15,11 @@ fn pause_step_reset_drafts_budget_and_error_recovery() {
     scene.advance(60.0);
     assert_eq!(scene.simulation.snapshot.time, 0.1);
     assert_eq!(scene.simulation.settings.masses, [1.0, 100.0]);
+    // Long frames admit only 0.05 wall-clock seconds before Speed.
     scene.speed = 10.0;
     scene.advance(60.0);
-    assert!(scene.budget_limited);
-    assert_eq!(scene.steps, MAX_STEPS);
+    assert!(!scene.budget_limited);
+    assert_eq!(scene.simulation.snapshot.time, 0.6);
     let before = scene.simulation.snapshot;
     scene.advance(0.0);
     assert_eq!(scene.simulation.snapshot, before, "no deferred catch-up");
@@ -43,13 +44,13 @@ fn pause_step_reset_drafts_budget_and_error_recovery() {
 }
 
 #[test]
-fn invalid_drafts_are_isolated_and_substeps_accumulate() {
+fn invalid_drafts_are_isolated_and_free_flight_has_no_fixed_timestep() {
     let mut scene = Blocks::new();
     scene.running = true;
     scene.advance(0.0004);
-    assert_eq!(scene.simulation.snapshot.time, 0.0);
+    assert_eq!(scene.simulation.snapshot.time, 0.0004);
     scene.advance(0.0006);
-    assert_eq!(scene.simulation.snapshot.time, DT);
+    assert_eq!(scene.simulation.snapshot.time, 0.001);
     let before = scene.simulation.snapshot;
     scene.draft.restitution = f64::NAN;
     scene.restart(scene.draft.clone());
@@ -73,7 +74,7 @@ fn invalid_drafts_are_isolated_and_substeps_accumulate() {
 }
 
 #[test]
-fn fixed_steps_give_identical_results_across_frame_partitions() {
+fn analytic_impacts_give_identical_velocities_across_frame_partitions() {
     let mut a = Blocks::new();
     let mut b = Blocks::new();
     a.running = true;
@@ -83,8 +84,48 @@ fn fixed_steps_give_identical_results_across_frame_partitions() {
         b.advance(0.007);
         b.advance(0.013);
     }
-    assert_eq!(a.simulation.snapshot, b.simulation.snapshot);
+    assert_eq!(
+        a.simulation.snapshot.velocity,
+        b.simulation.snapshot.velocity
+    );
+    assert_eq!(
+        a.simulation.snapshot.collisions,
+        b.simulation.snapshot.collisions
+    );
+    for (x, y) in a
+        .simulation
+        .snapshot
+        .x
+        .into_iter()
+        .zip(b.simulation.snapshot.x)
+    {
+        assert!((x - y).abs() < 1e-11);
+    }
     assert!(a.simulation.snapshot.collisions.iter().all(|&n| n > 0));
+}
+
+#[test]
+fn dense_collision_burst_exposes_budget_without_skipping_events_or_catching_up() {
+    let mut scene = Blocks::new();
+    scene.restart(Settings {
+        masses: [1.0, 1e8],
+        ..Default::default()
+    });
+    scene.advance(0.0);
+    scene.running = true;
+    scene.speed = 10.0;
+    for _ in 0..100 {
+        scene.advance(0.05);
+        assert!(scene.simulation.error.is_none());
+        if scene.budget_limited {
+            assert_eq!(scene.steps, MAX_IMPACTS);
+            let before = scene.simulation.snapshot;
+            scene.advance(0.0);
+            assert_eq!(scene.simulation.snapshot, before);
+            return;
+        }
+    }
+    panic!("expected dense burst to exhaust the frame budget");
 }
 
 #[test]

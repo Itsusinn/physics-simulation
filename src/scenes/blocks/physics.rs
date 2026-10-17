@@ -1,18 +1,13 @@
-//! Avian owns collision detection and impulse resolution. This private Bevy
-//! world has no renderer, window, automatic clock, or catch-up schedule.
-use std::time::Duration;
+//! Event-driven one-dimensional rigid impacts. Free flight is linear and each
+//! binary impact satisfies momentum conservation and Newton restitution in f64.
+//! This ideal instantaneous-contact model does not simulate material deformation.
 
-use avian2d::dynamics::{joints::joint_graph::JointGraphChange, solver::SolverConfig};
-use avian2d::{physics_transform::PhysicsTransformConfig, prelude::*};
-use bevy::{ecs::schedule::ScheduleLabel, math::DVec2, prelude::*};
-
-pub const DT: f64 = 0.001;
 pub const SIZES: [f64; 2] = [0.7, 1.4];
 pub const START_X: [f64; 2] = [2.0, 5.0];
+const MAX_POSITION: f64 = 1e12;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Settings {
-    // Keep editable inputs in f64; Avian applies masses in f32 even in f64 mode.
     pub masses: [f64; 2],
     pub incoming_speed: f64,
     pub restitution: f64,
@@ -33,11 +28,13 @@ impl Settings {
         if self.masses.iter().any(|&m| !m.is_finite() || m <= 0.0) {
             return Err("Masses must be finite positive numbers.");
         }
-        if self.masses.iter().any(|&m| {
-            let applied = m as f32;
-            !applied.is_normal() || !applied.recip().is_normal()
-        }) {
-            return Err("Mass is too small or too large for the collision solver.");
+        let largest = self.masses[0].max(self.masses[1]);
+        if self
+            .masses
+            .iter()
+            .any(|&m| !m.is_normal() || !m.recip().is_normal() || !(m / largest).is_normal())
+        {
+            return Err("Mass or mass ratio exceeds the f64 solver range.");
         }
         if !self.incoming_speed.is_finite() || !(0.1..=3.0).contains(&self.incoming_speed) {
             return Err("Incoming speed must be from 0.1 to 3.");
@@ -45,12 +42,26 @@ impl Settings {
         if !self.restitution.is_finite() || !(0.0..=1.0).contains(&self.restitution) {
             return Err("Restitution must be from 0 to 1.");
         }
+        if !energy(self.masses, [0.0, -self.incoming_speed]).is_normal() {
+            return Err("Initial kinetic energy exceeds the f64 solver range.");
+        }
         Ok(())
     }
 
-    fn applied_masses(&self) -> [f64; 2] {
-        self.masses.map(|mass| f64::from(mass as f32))
+    fn weights(&self) -> [f64; 2] {
+        // Scale before adding, to avoid overflowing the total mass.
+        let scale = self.masses[0].max(self.masses[1]);
+        let scaled = self.masses.map(|m| m / scale);
+        scaled.map(|m| m / (scaled[0] + scaled[1]))
     }
+}
+
+fn energy(masses: [f64; 2], velocity: [f64; 2]) -> f64 {
+    masses
+        .into_iter()
+        .zip(velocity)
+        .map(|(m, v)| (0.5 * m * v) * v)
+        .sum()
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -59,7 +70,8 @@ pub struct Snapshot {
     pub velocity: [f64; 2],
     pub time: f64,
     pub kinetic: f64,
-    pub collisions: [u64; 2], // block/block, small block/wall
+    pub dissipated: f64,
+    pub collisions: [u64; 2], // block/block, left block/wall
 }
 
 impl Snapshot {
@@ -68,391 +80,217 @@ impl Snapshot {
     }
 }
 
-#[derive(Clone, Copy, Component, PartialEq, Eq)]
-enum Part {
-    Small,
-    Large,
-    Wall,
+#[derive(Clone, Copy)]
+struct State {
+    // Surface gaps retain precision near contact instead of subtracting centers.
+    gaps: [f64; 2], // wall/left block, left/right block
+    velocity: [f64; 2],
+    time: f64,
+    dissipated: f64,
+    collisions: [u64; 2],
 }
 
-#[derive(Resource, Default)]
-struct Counts([u64; 2]);
+impl State {
+    fn flight(self, duration: f64) -> Self {
+        Self {
+            gaps: [
+                self.velocity[0].mul_add(duration, self.gaps[0]),
+                (self.velocity[1] - self.velocity[0]).mul_add(duration, self.gaps[1]),
+            ],
+            time: self.time + duration,
+            ..self
+        }
+    }
 
-#[derive(ScheduleLabel, Debug, Clone, PartialEq, Eq, Hash)]
-struct AdvanceBlocks;
+    fn snapshot(self, masses: [f64; 2]) -> Snapshot {
+        Snapshot {
+            x: [
+                self.gaps[0] + SIZES[0] * 0.5,
+                self.gaps[0] + SIZES[0] + self.gaps[1] + SIZES[1] * 0.5,
+            ],
+            velocity: self.velocity,
+            time: self.time,
+            kinetic: energy(masses, self.velocity),
+            dissipated: self.dissipated,
+            collisions: self.collisions,
+        }
+    }
+}
+
+#[derive(Default, Debug)]
+pub struct Advance {
+    pub impacts: usize,
+    pub budget_limited: bool,
+}
 
 pub struct Simulation {
-    world: World,
-    bodies: [Entity; 2],
+    // Frames sample the trajectory anchored at the last impact. They never
+    // re-anchor free flight, so event times do not depend on frame subdivision.
+    anchor: State,
     pub settings: Settings,
     pub snapshot: Snapshot,
     pub initial_energy: f64,
     pub error: Option<String>,
-    ticks: u64,
 }
 
 impl Simulation {
     pub fn new(settings: Settings) -> Result<Self, &'static str> {
         settings.validate()?;
-        let initial_velocity = -f64::from(settings.incoming_speed as f32);
-        let mut app = App::new();
-        // Register only the contact pipeline. Building the default plugin group
-        // and disabling plugins afterwards still retains their dynamic plugin
-        // constructors in WASM (including unused raycasts and joint support).
-        app.add_plugins((
-            PhysicsSchedulePlugin::new(AdvanceBlocks),
-            MassPropertyPlugin::new(AdvanceBlocks),
-            ForcePlugin,
-            ColliderHierarchyPlugin,
-            ColliderTransformPlugin::new(AdvanceBlocks),
-            ColliderBackendPlugin::<Collider>::new(AdvanceBlocks),
-            ColliderTreePlugin::<Collider>::default(),
-            NarrowPhasePlugin::<Collider>::default(),
-            BodySizeMetricsPlugin::<Collider>::default(),
-        ));
-        app.add_plugins((
-            SolverBodyPlugin,
-            SolverSchedulePlugin,
-            IntegratorPlugin::default(),
-            SolverPlugin::default(),
-            CcdPlugin,
-            IslandPlugin,
-            IslandSleepingPlugin,
-            BroadPhaseCorePlugin,
-            BvhBroadPhasePlugin::<()>::default(),
-            PhysicsTransformPlugin::new(AdvanceBlocks),
-        ));
-        app.init_resource::<Time>()
-            // SolverPlugin reads this queue even in a world with no joints.
-            .add_message::<JointGraphChange>()
-            .init_resource::<Time<Real>>()
-            .init_resource::<Counts>()
-            .insert_resource(Gravity::ZERO)
-            // Improve resolution of simultaneous wall/block contacts.
-            .insert_resource(SubstepCount(8))
-            .insert_resource(SolverConfig {
-                restitution_threshold: 0.0,
-                // Avoid energetic separation kicks in inelastic contact stacks.
-                max_overlap_solve_speed: 0.1,
-                restitution_iterations: 8,
-                ..Default::default()
-            })
-            .insert_resource(PhysicsTransformConfig {
-                propagate_before_physics: false,
-                transform_to_position: false,
-                position_to_transform: false,
-                transform_to_collider_scale: false,
-            })
-            .add_systems(
-                AdvanceBlocks,
-                count_collisions.after(PhysicsSystems::StepSimulation),
-            );
-        app.finish();
-        app.cleanup();
-        let mut world = std::mem::take(app.world_mut());
-        let wall = (
-            RigidBody::Static,
-            Friction::ZERO,
-            Restitution::new(settings.restitution as f32),
-        );
-        world.spawn((
-            wall,
-            Part::Wall,
-            Position(DVec2::new(-0.15, 1.7)),
-            Collider::rectangle(0.3, 3.4),
-        ));
-        // Horizontal leg of the L. The slider constraint locks vertical motion;
-        // gravity is zero, so the rail does not introduce resting-contact noise.
-        world.spawn((
-            RigidBody::Static,
-            Position(DVec2::new(49.85, -0.15)),
-            Collider::rectangle(100.3, 0.3),
-            Friction::ZERO,
-        ));
-        let bodies = std::array::from_fn(|i| {
-            world
-                .spawn((
-                    if i == 0 { Part::Small } else { Part::Large },
-                    RigidBody::Dynamic,
-                    Collider::rectangle(SIZES[i] as f32, SIZES[i] as f32),
-                    Position(DVec2::new(START_X[i], SIZES[i] * 0.5)),
-                    LinearVelocity(Vec2::new(
-                        if i == 0 {
-                            0.0
-                        } else {
-                            -settings.incoming_speed as f32
-                        },
-                        0.0,
-                    )),
-                    Mass(settings.masses[i] as f32),
-                    NoAutoMass,
-                    LockedAxes::ROTATION_LOCKED.lock_translation_y(),
-                    Friction::ZERO,
-                    Restitution::new(settings.restitution as f32),
-                    SleepingDisabled,
-                    CollisionEventsEnabled,
-                    SpeculativeCcd::ZERO,
-                    SweptCcd::default()
-                        .with_filter(CcdFilter::ALL)
-                        .with_threshold(0.0),
-                ))
-                .id()
-        });
-        // Initialize collider/mass components without advancing simulation time.
-        world.run_schedule(AdvanceBlocks);
-        let kinetic = 0.5 * settings.applied_masses()[1] * initial_velocity.powi(2);
+        let anchor = State {
+            gaps: [
+                START_X[0] - SIZES[0] * 0.5,
+                START_X[1] - START_X[0] - (SIZES[0] + SIZES[1]) * 0.5,
+            ],
+            velocity: [0.0, -settings.incoming_speed],
+            time: 0.0,
+            dissipated: 0.0,
+            collisions: [0; 2],
+        };
+        let snapshot = anchor.snapshot(settings.masses);
         Ok(Self {
-            world,
-            bodies,
-            snapshot: Snapshot {
-                x: START_X,
-                velocity: [0.0, initial_velocity],
-                time: 0.0,
-                kinetic,
-                collisions: [0; 2],
-            },
+            anchor,
             settings,
-            initial_energy: kinetic,
+            initial_energy: snapshot.kinetic,
+            snapshot,
             error: None,
-            ticks: 0,
         })
     }
 
-    pub fn tick(&mut self) {
-        if self.error.is_some() {
-            return;
+    pub fn advance(&mut self, duration: f64, max_impacts: usize) -> Advance {
+        let mut result = Advance::default();
+        if self.error.is_some() || !duration.is_finite() || duration <= 0.0 {
+            return result;
         }
-        self.world
-            .resource_mut::<Time>()
-            .advance_by(Duration::from_millis(1));
-        self.world.run_schedule(AdvanceBlocks);
-        let x = self
-            .bodies
-            .map(|e| self.world.get::<Position>(e).expect("slider position").x);
-        let velocity = self.bodies.map(|e| {
-            f64::from(
-                self.world
-                    .get::<LinearVelocity>(e)
-                    .expect("slider velocity")
-                    .x,
-            )
-        });
-        let kinetic = self
-            .settings
-            .applied_masses()
-            .into_iter()
-            .zip(velocity)
-            .map(|(mass, speed)| 0.5 * mass * speed.powi(2))
-            .sum::<f64>();
-        if x.iter()
-            .chain(velocity.iter())
-            .any(|v| !v.is_finite() || v.abs() > 1e12)
-            || !kinetic.is_finite()
-            || x[0] < SIZES[0] * 0.5 - 0.02
-            || x[1] - x[0] < (SIZES[0] + SIZES[1]) * 0.5 - 0.02
-        {
-            self.error = Some("Collision solver left the valid range. Last valid frame retained; Reset to recover.".into());
-            return;
+        let target = self.snapshot.time + duration;
+        if !target.is_finite() || target <= self.snapshot.time {
+            self.error = Some(
+                "Time cannot advance in f64. Last valid state retained; Reset to recover.".into(),
+            );
+            return result;
         }
-        self.ticks += 1;
-        self.snapshot = Snapshot {
-            x,
-            velocity,
-            kinetic,
-            time: self.ticks as f64 * DT,
-            collisions: self.world.resource::<Counts>().0,
-        };
-        // There is no App::update driving message maintenance in this private
-        // world. Explicit rotation keeps collision messages bounded while idle.
-        self.world
-            .resource_mut::<Messages<CollisionStart>>()
-            .update();
-        self.world.resource_mut::<Messages<CollisionEnd>>().update();
+        loop {
+            let a = self.anchor;
+            let wall = if a.velocity[0] < 0.0 {
+                a.gaps[0] / -a.velocity[0]
+            } else {
+                f64::INFINITY
+            };
+            let blocks = if a.velocity[0] > a.velocity[1] {
+                a.gaps[1] / (a.velocity[0] - a.velocity[1])
+            } else {
+                f64::INFINITY
+            };
+            let interval = wall.min(blocks);
+            let event_time = a.time + interval;
+            if event_time > target || !interval.is_finite() {
+                let mut state = a.flight(target - a.time);
+                state.time = target;
+                self.publish(state);
+                return result;
+            }
+            let simultaneous = wall == blocks;
+            let impacts = if simultaneous { 2 } else { 1 };
+            if max_impacts - result.impacts < impacts {
+                // Drop uncomputed wall-clock time without skipping any impact.
+                result.budget_limited = true;
+                return result;
+            }
+            let closing_gap = if wall <= blocks { a.gaps[0] } else { a.gaps[1] };
+            if (interval > 0.0 && event_time <= a.time) || (interval == 0.0 && closing_gap > 0.0) {
+                self.error = Some("Impact times are below f64 resolution (possible inelastic collapse or extreme mass ratio). Last valid state retained; Reset to recover.".into());
+                return result;
+            }
+            if simultaneous && self.settings.restitution > 0.0 {
+                self.error = Some("Simultaneous wall and block impacts need a multi-contact material model. Last valid state retained; Reset to recover.".into());
+                return result;
+            }
+            let mut state = a.flight(interval);
+            let wall_hit = wall <= blocks;
+            state.gaps[if wall_hit { 0 } else { 1 }] = 0.0;
+            // Only remove roundoff at an analytically located contact. No
+            // overlap correction impulse or minimum bounce speed is introduced.
+            for gap in &mut state.gaps {
+                if *gap < 0.0 && *gap >= -64.0 * f64::EPSILON * a.gaps[0].max(a.gaps[1]).max(1.0) {
+                    *gap = 0.0;
+                }
+            }
+            if state.gaps == [0.0, 0.0] && self.settings.restitution > 0.0 {
+                self.error = Some("Simultaneous wall and block contacts need a multi-contact material model (possible inelastic collapse). Last valid state retained; Reset to recover.".into());
+                return result;
+            }
+            let e = self.settings.restitution;
+            let [u, v] = a.velocity;
+            if e == 0.0 && state.gaps == [0.0, 0.0] {
+                // Persistent completely inelastic contacts transmit the wall
+                // impulse through the pair without inventing repeated impacts.
+                state.velocity = [0.0; 2];
+                state.dissipated += energy(self.settings.masses, a.velocity);
+            } else if wall_hit {
+                state.velocity[0] = -e * u;
+                state.dissipated += (0.5 * self.settings.masses[0] * u) * u * (1.0 - e) * (1.0 + e);
+            } else {
+                let [w0, w1] = self.settings.weights();
+                if e == 0.0 {
+                    let common = w0.mul_add(u, w1 * v);
+                    state.velocity = [common; 2];
+                } else {
+                    state.velocity = [
+                        (-(1.0 + e) * w1).mul_add(u - v, u),
+                        ((1.0 + e) * w0).mul_add(u - v, v),
+                    ];
+                }
+                let reduced_mass = if self.settings.masses[0] <= self.settings.masses[1] {
+                    self.settings.masses[0] * w1
+                } else {
+                    self.settings.masses[1] * w0
+                };
+                state.dissipated +=
+                    (0.5 * reduced_mass * (u - v)) * (u - v) * (1.0 - e) * (1.0 + e);
+            }
+            let index = usize::from(wall_hit);
+            // Reserve space for total_collisions() as well as each subtotal.
+            if state.collisions[0]
+                .checked_add(state.collisions[1])
+                .and_then(|n| n.checked_add(impacts as u64))
+                .is_none()
+            {
+                self.error = Some(
+                    "Collision counter exhausted. Last valid state retained; Reset to recover."
+                        .into(),
+                );
+                return result;
+            }
+            state.collisions[index] += 1;
+            if simultaneous {
+                state.collisions[1 - index] += 1;
+            }
+            if !self.publish(state) {
+                return result;
+            }
+            self.anchor = state;
+            result.impacts += impacts;
+        }
     }
-}
 
-fn count_collisions(
-    mut events: MessageReader<CollisionStart>,
-    parts: Query<&Part>,
-    mut counts: ResMut<Counts>,
-) {
-    for event in events.read() {
-        let (Ok(a), Ok(b)) = (parts.get(event.collider1), parts.get(event.collider2)) else {
-            continue;
-        };
-        match (*a, *b) {
-            (Part::Small, Part::Large) | (Part::Large, Part::Small) => counts.0[0] += 1,
-            (Part::Small, Part::Wall) | (Part::Wall, Part::Small) => counts.0[1] += 1,
-            _ => {}
+    fn publish(&mut self, state: State) -> bool {
+        let snapshot = state.snapshot(self.settings.masses);
+        if state.gaps.iter().any(|&gap| !gap.is_finite() || gap < 0.0)
+            || snapshot
+                .x
+                .iter()
+                .chain(snapshot.velocity.iter())
+                .any(|v| !v.is_finite() || v.abs() > MAX_POSITION)
+            || !snapshot.kinetic.is_finite()
+            || !snapshot.dissipated.is_finite()
+        {
+            self.error = Some("Collision state exceeds the numerical/display range. Last valid state retained; Reset to recover.".into());
+            return false;
         }
+        self.snapshot = snapshot;
+        true
     }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn invalid_masses_are_rejected_for_either_block() {
-        for mass in [
-            0.0,
-            -1.0,
-            f64::NAN,
-            f64::INFINITY,
-            f64::NEG_INFINITY,
-            1e-50,
-            1e50,
-            1e-38,
-            1e38,
-        ] {
-            for index in 0..2 {
-                let mut settings = Settings::default();
-                settings.masses[index] = mass;
-                assert!(Simulation::new(settings).is_err(), "mass {mass} at {index}");
-            }
-        }
-    }
-
-    #[test]
-    fn kinetic_energy_uses_applied_masses_without_a_display_position_limit() {
-        for mass in [0.1, 1e13] {
-            let mut simulation = Simulation::new(Settings {
-                masses: [mass, mass],
-                ..Default::default()
-            })
-            .unwrap();
-            let expected = 0.5 * f64::from(mass as f32);
-            assert_eq!(simulation.initial_energy, expected);
-            assert_eq!(simulation.snapshot.kinetic, expected);
-            simulation.tick();
-            assert!(simulation.error.is_none(), "{:?}", simulation.error);
-            assert_eq!(simulation.snapshot.kinetic, expected);
-            assert_eq!(simulation.snapshot.time, DT);
-        }
-    }
-
-    #[test]
-    fn first_impact_matches_one_dimensional_impulse_equations() {
-        for masses in [
-            [1.0, 1.0],
-            [1.0, 100.0],
-            [100.0, 1.0],
-            [0.25, 2.5],
-            [2500.5, 125.25],
-            [0.1, 0.3],
-        ] {
-            for restitution in [0.0, 0.5, 1.0] {
-                let settings = Settings {
-                    masses,
-                    incoming_speed: 3.0,
-                    restitution,
-                };
-                let mut simulation = Simulation::new(settings).unwrap();
-                for _ in 0..800 {
-                    simulation.tick();
-                    if simulation.snapshot.collisions[0] > 0 {
-                        break;
-                    }
-                }
-                // Contact events may precede the impulse by one step because
-                // the narrow phase includes a small contact tolerance. Allow
-                // the contact solve to settle, well before the wall is reached.
-                for _ in 0..50 {
-                    simulation.tick();
-                }
-                assert!(simulation.error.is_none(), "{:?}", simulation.error);
-                assert_eq!(simulation.snapshot.collisions, [1, 0]);
-                let [m, big] = simulation.settings.applied_masses();
-                let expected = [
-                    -(1.0 + restitution) * big * 3.0 / (m + big),
-                    -(big - restitution * m) * 3.0 / (m + big),
-                ];
-                for (actual, expected) in simulation.snapshot.velocity.into_iter().zip(expected) {
-                    assert!(
-                        (actual - expected).abs() < 1e-5,
-                        "masses {masses:?}, e {restitution}: {actual} vs {expected}"
-                    );
-                }
-                let momentum =
-                    m * simulation.snapshot.velocity[0] + big * simulation.snapshot.velocity[1];
-                assert!((momentum + big * 3.0).abs() < big * 3.0 * 1e-5);
-                assert!(simulation.snapshot.kinetic <= simulation.initial_energy * (1.0 + 1e-5));
-            }
-        }
-    }
-
-    #[test]
-    fn avian_resolves_block_and_wall_collisions() {
-        let mut simulation = Simulation::new(Settings::default()).unwrap();
-        for _ in 0..12_000 {
-            simulation.tick();
-        }
-        eprintln!("{:?}, error {:?}", simulation.snapshot, simulation.error);
-        assert!(simulation.error.is_none());
-        assert_eq!(simulation.snapshot.collisions, [16, 15]);
-        assert_eq!(simulation.snapshot.total_collisions(), 31);
-        assert!(simulation.snapshot.velocity[1] > 0.0);
-        assert!((simulation.snapshot.kinetic / simulation.initial_energy - 1.0).abs() < 1e-4);
-    }
-
-    #[test]
-    fn wall_reverses_velocity_and_failure_retains_last_snapshot() {
-        let mut simulation = Simulation::new(Settings::default()).unwrap();
-        simulation
-            .world
-            .entity_mut(simulation.bodies[0])
-            .insert(LinearVelocity(Vec2::new(-1.0, 0.0)));
-        simulation
-            .world
-            .entity_mut(simulation.bodies[1])
-            .insert(LinearVelocity::ZERO);
-        for _ in 0..1800 {
-            simulation.tick();
-        }
-        assert!(simulation.error.is_none());
-        assert_eq!(simulation.snapshot.collisions, [0, 1]);
-        assert!((simulation.snapshot.velocity[0] - 1.0).abs() < 1e-5);
-        let before = simulation.snapshot;
-        simulation
-            .world
-            .entity_mut(simulation.bodies[0])
-            .insert(Position(DVec2::new(-1.0, 0.35)));
-        simulation.tick();
-        assert!(simulation.error.is_some());
-        assert_eq!(simulation.snapshot, before);
-        simulation.tick();
-        assert_eq!(simulation.snapshot, before);
-    }
-
-    #[test]
-    fn maximum_speed_and_dissipative_contacts_remain_bounded() {
-        for restitution in [0.0, 0.5, 1.0] {
-            let mut simulation = Simulation::new(Settings {
-                incoming_speed: 3.0,
-                restitution,
-                ..Default::default()
-            })
-            .unwrap();
-            for _ in 0..6_000 {
-                simulation.tick();
-            }
-            assert!(
-                simulation.error.is_none(),
-                "e {restitution}: {:?}",
-                simulation.error
-            );
-            assert!(simulation.snapshot.collisions.iter().all(|&n| n > 0));
-            assert!(
-                simulation.snapshot.kinetic <= simulation.initial_energy * 1.0001,
-                "e {restitution}: {:?}",
-                simulation.snapshot
-            );
-            if restitution == 1.0 {
-                assert_eq!(simulation.snapshot.collisions, [16, 15]);
-                assert!(simulation.snapshot.velocity[1] > 0.0);
-            } else {
-                assert!(simulation.snapshot.kinetic < simulation.initial_energy * 0.9);
-            }
-        }
-    }
-}
+#[path = "physics/tests.rs"]
+mod tests;

@@ -11,8 +11,6 @@ bevy = { version = "=0.20.0", default-features = false, features = ["std", "asyn
 bevy_egui = { version = "=0.43.1", default-features = false, features = ["default_fonts", "render"] }
 wgpu = { version = "=30.0.1", default-features = false, features = ["wgsl"] }
 ode_solvers = "=0.6.2"
-# Bevy 0.20 port: avianphysics/avian#1070, pinned for reproducible builds.
-avian2d = { git = "https://github.com/avianphysics/avian", rev = "34c9b008d2f40638a953d9218db48d54f661365d", default-features = false, features = ["2d", "f64", "parry-f64"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 # Browser rendering uses WebGPU only.

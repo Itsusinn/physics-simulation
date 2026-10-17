@@ -1,12 +1,12 @@
 # physics-simulation
 
-An interactive physics laboratory featuring the classic Pythagorean three-body problem, spatial three-body motion, a double pendulum, coupled spring oscillators, Kepler orbits, and colliding sliding blocks. Built with Rust/WASM, Bevy 0.20, bevy_egui, WebGPU, and Trunk. Smooth mechanics uses runtime-selectable CPU double-precision integrators (DOP853 by default); sliding blocks use Avian collision physics; WebGPU renders the experiments and trails.
+An interactive physics laboratory featuring the classic Pythagorean three-body problem, spatial three-body motion, a double pendulum, coupled spring oscillators, Kepler orbits, and colliding sliding blocks. Built with Rust/WASM, Bevy 0.20, bevy_egui, WebGPU, and Trunk. Smooth mechanics uses runtime-selectable CPU double-precision integrators (DOP853 by default); sliding blocks use event-driven analytic f64 impacts; WebGPU renders the experiments and trails.
 
 [Live demo](https://itsusinn.github.io/apps/physics-simulation/)
 
 Adjust initial conditions and simulation parameters, explore orbital trails, and monitor energy and momentum. Requires a WebGPU-capable browser on HTTPS or localhost.
 
-Adaptive integration uses relative tolerance `1e-11`, absolute tolerance `1e-13`, and maximum step `0.05` by default. Tolerances control estimated local error, not global trajectory accuracy. The classic initial conditions are paused on startup. For the ODE experiments, physics and conservation diagnostics remain `f64`; only display data are converted to `f32`. The Avian scene has its own fixed-step collision solver, described below.
+Adaptive integration uses relative tolerance `1e-11`, absolute tolerance `1e-13`, and maximum step `0.05` by default. Tolerances control estimated local error, not global trajectory accuracy. The classic initial conditions are paused on startup. All six experiments keep physics and diagnostics in `f64`; only display data are converted to `f32`. Sliding blocks use their own event-driven impact solver, described below.
 
 ## Run locally
 
@@ -26,7 +26,7 @@ Release builds use WebGPU-only browser rendering and wasm-opt for size optimizat
 
 The startup overlay shows WASM download progress, then initialization status until the scene UI is ready. Loading errors offer a retry button. A Python standard-library post-build hook corrects Trunk 0.21.14's progress total to the final optimized WASM size, including when the server uses compression.
 
-The measured Bevy migration bundle is 15,038,672 bytes of WASM (5,016,041 bytes estimated with gzip-9). The Avian sliding-block build measures 18,638,724 bytes raw and 5,965,105 bytes estimated with gzip-9 on Windows (2026-10-15). CI enforces the user-approved 20 MB raw WASM budget. Compression estimates are not a promise of actual server transfer size.
+The measured Bevy migration bundle is 15,038,672 bytes of WASM (5,016,041 bytes estimated with gzip-9). The historical Avian sliding-block build measured 18,638,724 bytes raw and 5,965,105 bytes estimated with gzip-9 on Windows (2026-10-15). CI enforces the user-approved 20 MB raw WASM budget. Compression estimates are not a promise of actual server transfer size.
 
 ## Algorithms and hot swapping
 
@@ -57,17 +57,27 @@ Drag to orbit, Shift-drag or right-drag to pan, scroll to zoom, and double-click
 
 ### Sliding blocks and an L-shaped wall
 
-`2d-block-collisions` uses [Avian PR #1070](https://github.com/avianphysics/avian/pull/1070), pinned to `34c9b008d2f40638a953d9218db48d54f661365d`. This port shares Bevy 0.20 with the application; its three Git dependencies are also pinned by the upstream manifests and Cargo.lock. Only the required contact plugins are registered; spatial queries, joints and interpolation are omitted. Default Avian features are disabled; only 2D, f64 and the Parry f64 collider backend are enabled.
+`2d-block-collisions` uses a Rust-native **event-driven f64 solver** for ideal one-dimensional, frictionless rigid blocks. On 2026-10-17 the user approved replacing Avian PR #1070; Avian and its collision dependencies have been removed. This improves numerical accuracy for the existing model; it does not model deformation, contact duration, friction, or material-dependent restitution.
 
-The L-shaped boundary consists of a left wall and horizontal rail. The small block (mass 1, side 0.7, center x = 2) starts at rest; the large block (mass 100, side 1.4, center x = 5) moves left at speed 1. The blocks collide with each other and the small block rebounds from the wall. Vertical motion and rotation are locked, gravity and friction are zero. Shapes match the collider dimensions. The rail is drawn across the view; horizontal motion is constrained even beyond its finite collider.
+The L-shaped boundary consists of a fixed wall at x = 0 and a horizontal rail. The left block (mass 1, side 0.7, center x = 2) starts at rest; the right block (mass 100, side 1.4, center x = 5) moves left at speed 1. Block sizes define the actual contact surfaces. Vertical motion and rotation are excluded; gravity and friction are zero.
 
-Parameters offers independent positive masses for both blocks, including decimals and values above 100, incoming speed 0.1–3 and restitution 0–1. Double-click either mass to type a value. Mass and inverse mass must remain normal finite f32 values in the collision solver. Defaults use elastic restitution 1; smaller values dissipate energy. Edits apply with **Apply & restart**; Reset uses the last applied settings. The scene starts paused and supports Run/Pause, Step (0.05 simulated seconds), Space, R, pan, zoom and Auto frame. A prominent total collision counter stays visible in the experiment when Parameters is hidden, with block/block and small/wall subtotals. The total is their sum and returns to zero on Reset or Apply & restart. Diagnostics also show velocities, kinetic energy and relative kinetic-energy change. Persistent contact is counted once, not once per solver step.
+Parameters offers independent positive f64 masses, including decimals and values above 100, incoming speed 0.1–3, and restitution 0–1. Double-click a mass to type it. Masses, inverse masses, the normalized mass ratio, and initial kinetic energy must stay within the solver's normal finite f64 range. Apply & restart applies the draft at the next Update and pauses; Reset restores the last applied settings. Run/Pause, Step (0.05 simulated seconds), Space, R, pan, zoom, Auto frame, and the always-visible collision counter are retained. Reset and Apply clear both collision subtotals. Persistent contact adds no counts.
 
-Avian owns a scene-local headless Bevy World, using a fixed 0.001 s step with eight solver substeps from `advance` only. Swept CCD covers all body types; speculative contacts are disabled and overlap correction is limited to 0.1 units/s to reduce artificial rebound in inelastic stacks. The frame admits at most 0.05 wall-clock seconds before Speed and performs at most 256 physics steps; excess whole steps are dropped, with a visible budget message. Fractional steps accumulate. Rendering never advances physics. Switching away drops this world and its contacts. The algorithm selector displays Avian for this scene; ODE methods are unavailable because they do not resolve contacts.
+Between impacts the blocks move in exact linear free flight up to floating-point roundoff. The next wall impact is at `gap_wall / -v_left` when `v_left < 0`; the next block impact is at `gap_blocks / (v_left - v_right)` when the blocks approach. The earlier event is resolved at contact. For pre-impact velocities u and v, mass fractions a = m_left/(m_left+m_right), b = m_right/(m_left+m_right), and restitution e:
 
-This Avian revision uses f64 positions, with f32 velocities, mass, collider dimensions and contact solving. Diagnostics convert the engine state to f64; this does not recover precision lost inside the solver. Input masses are rounded to f32 for the solver; kinetic-energy diagnostics use those same rounded masses. Mass rounding, inverse-mass rounding and the contact solver introduce numerical error, especially at extreme mass ratios. Elastic restitution is not a promise of exact energy conservation or mathematically exact collision counts. Non-finite states, excessive overlap or out-of-range display data stop the simulation while retaining the last valid snapshot; Reset recovers.
+- Block impact: `u' = u - (1+e)b(u-v)`, `v' = v + (1+e)a(u-v)`.
+- Wall impact: `u' = -e u`; the fixed wall exchanges momentum with the blocks.
+- A block impact dissipates `0.5 μ (1-e²)(u-v)²`, where μ is the reduced mass. A wall impact dissipates `0.5 m_left (1-e²)u²`.
 
-`src/scenes/blocks/` contains the physics world, controls, rendering and tests. Focused checks: `cargo test --jobs 2 scenes::blocks:: -- --nocapture`.
+Mass fractions are evaluated after scaling by the larger mass to avoid overflowing the total mass. Surface gaps and a trajectory anchored at the last collision avoid repeated center subtraction and frame-dependent collision timing. There is no fixed collision timestep, overlap correction impulse, or low-speed restitution threshold. The frame admits at most 0.05 wall-clock seconds before Speed and resolves at most 2048 impacts; if exhausted, it retains the last completed impact, drops uncomputed time, and shows a budget message. UI layout never advances physics; switching scenes releases the solver state.
+
+Diagnostics show velocities, kinetic energy K, physical dissipated energy Q, relative kinetic-energy change, and the numerical residual `(K+Q-K0)/K0`. The residual separates numerical drift from intentional dissipation. Elastic impacts conserve kinetic energy up to f64 roundoff. With e = 0, touching blocks share one velocity and stop together at the wall without repeated impacts.
+
+Constant-restitution instantaneous models can exhibit [inelastic collapse](https://arxiv.org/abs/cond-mat/9810009), an infinite collision sequence in finite time. When the next impact time cannot advance in f64, the simulation stops with an explicit message and retains the last valid state; it does not impose an artificial resting threshold or invent a final finite count. Exactly simultaneous elastic/partially elastic wall and block impacts also stop explicitly, since binary restitution alone does not specify a unique multi-contact material model. Out-of-range states stop safely; Reset recovers. Extreme mass ratios can reach these numerical limits even with e = 1; f64 is not arbitrary precision.
+
+Tests check isolated analytic collision velocities, momentum and energy loss, sticking, collapse, budgets, frame partitions, lifecycle and layout. The [Galperin billiards](https://arxiv.org/abs/1712.06698) geometric count `ceil(pi / atan(sqrt(m_left/m_right))) - 1` gives 3, 31, 314, 3141 and 31415 impacts at mass ratios 1, 100, 10⁴, 10⁶ and 10⁸. On Windows (2026-10-17), the default ratio's relative energy drift was about 4.4e-16 and the 31415-impact case about 2.3e-12; these are measured examples, not universal accuracy guarantees. The final slow collision may occur long after the dense collision burst.
+
+`src/scenes/blocks/` contains the solver, controls, rendering and tests. Focused checks: `cargo test --locked --jobs 2 scenes::blocks:: -- --nocapture`.
 
 ### Classic mechanics experiments
 
